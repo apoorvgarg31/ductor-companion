@@ -23,6 +23,7 @@
 		AA0000010000000000000010 /* AgentProfile.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000010 /* AgentProfile.swift */; };
 		AA0000010000000000000011 /* Keychain.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000011 /* Keychain.swift */; };
 		AA0000010000000000000012 /* SetupWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000012 /* SetupWizardView.swift */; };
+		AA0000010000000000000013 /* bridge_bundled in Resources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000013 /* bridge_bundled */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -44,6 +45,7 @@
 		BB0000010000000000000010 /* AgentProfile.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = AgentProfile.swift; sourceTree = "<group>"; };
 		BB0000010000000000000011 /* Keychain.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Keychain.swift; sourceTree = "<group>"; };
 		BB0000010000000000000012 /* SetupWizardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupWizardView.swift; sourceTree = "<group>"; };
+		BB0000010000000000000013 /* bridge_bundled */ = {isa = PBXFileReference; lastKnownFileType = folder; path = bridge_bundled; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -101,6 +103,7 @@
 			children = (
 				BB000001000000000000000C /* Assets.xcassets */,
 				BB000001000000000000000D /* bridge */,
+				BB0000010000000000000013 /* bridge_bundled */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -165,6 +168,7 @@
 			files = (
 				AA000001000000000000000C /* Assets.xcassets in Resources */,
 				AA000001000000000000000D /* bridge in Resources */,
+				AA0000010000000000000013 /* bridge_bundled in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

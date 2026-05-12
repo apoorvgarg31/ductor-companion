@@ -41,6 +41,13 @@ bridge/.sessions/
 **/Resources/bridge/.sessions/
 **/Resources/bridge/.venv/
 
+# PyInstaller output for the standalone bridge
+bridge/build/
+bridge/dist/
+# The bundled bridge folder ships at release time; locally it stays
+# empty (just .gitkeep) and the dev workflow falls back to the venv.
+Jarvis/Jarvis/Resources/bridge_bundled/bridge_app/
+
 # Env files
 *.env
 .env.local

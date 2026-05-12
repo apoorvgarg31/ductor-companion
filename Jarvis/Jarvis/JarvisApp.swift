@@ -199,25 +199,39 @@ final class DuctorAppController: NSObject {
     // MARK: - Bridge subprocess
 
     private func launchBridgeProcess() -> Int {
-        let resources = Bundle.main.resourceURL?.appendingPathComponent("bridge")
-        let bridgeScript = resources?.appendingPathComponent("bridge.py")
-        let venvPython = resources?.appendingPathComponent(".venv/bin/python3")
+        let resources = Bundle.main.resourceURL
+        let bridgeFolder = resources?.appendingPathComponent("bridge")
+        let bridgeScript = bridgeFolder?.appendingPathComponent("bridge.py")
+        let venvPython = bridgeFolder?.appendingPathComponent(".venv/bin/python3")
+        let bundledBridge = resources?
+            .appendingPathComponent("bridge_bundled/bridge_app/bridge")
         let portFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("ductor-companion.port")
         try? FileManager.default.removeItem(at: portFile)
 
-        guard let script = bridgeScript, FileManager.default.fileExists(atPath: script.path) else {
-            NSLog("[ductor] bridge.py not found in app Resources/")
-            return 0
-        }
-
         let proc = Process()
-        if let venv = venvPython, FileManager.default.fileExists(atPath: venv.path) {
+        if let bundled = bundledBridge,
+           FileManager.default.fileExists(atPath: bundled.path) {
+            // Shipping path: self-contained PyInstaller binary inside
+            // Resources/bridge_bundled/. No system Python required.
+            proc.executableURL = bundled
+            proc.arguments = []
+        } else if let script = bridgeScript,
+                  FileManager.default.fileExists(atPath: script.path),
+                  let venv = venvPython,
+                  FileManager.default.fileExists(atPath: venv.path) {
+            // Dev path: venv installed by scripts/install_bridge_deps.sh
             proc.executableURL = venv
             proc.arguments = [script.path]
-        } else {
+        } else if let script = bridgeScript,
+                  FileManager.default.fileExists(atPath: script.path) {
+            // Last resort: hope a system python3 is on PATH.
             proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
             proc.arguments = ["python3", script.path]
+        } else {
+            NSLog("[ductor] no bridge launcher found "
+                  + "(neither bridge_bundled/ nor bridge/bridge.py)")
+            return 0
         }
 
         var env = ProcessInfo.processInfo.environment

@@ -1,0 +1,4 @@
+# Placeholder so the Xcode folder reference resolves on disk before
+# scripts/install_bridge_deps.sh --standalone has populated this
+# directory. The release CI workflow drops the PyInstaller output
+# (bridge_app/bridge + _internal/) here before xcodebuild runs.
