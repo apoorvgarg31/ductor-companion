@@ -1,59 +1,5 @@
 #!/usr/bin/env python3
-"""Telegram <-> Ductor Companion bridge.
-
-Logs into Telegram as the user (not a bot — bots cannot read each other's
-messages), watches a single configured bot chat, and exposes a local
-websocket on 127.0.0.1:<auto-picked-port> for the Swift host app.
-
-Inbound from Telegram bot chat -> websocket clients:
-    {"kind": "jarvis_message", "text": "...", "has_media": false,
-     "media_caption": null, "timestamp": 1234567890.0}
-
-Outbound from websocket clients -> Telegram bot chat:
-    {"kind": "user_text", "text": "..."}
-    {"kind": "heartbeat", "data": {...}}     # serialized to "[heartbeat] {...}"
-    {"kind": "screenshot", "png_base64": "...", "caption": "..."}
-
-Login-flow messages (in-app wizard, see TelegramLoginView.swift):
-    bridge -> swift   {"kind": "needs_sms_code", "phone": "+15..."}
-                      {"kind": "needs_2fa_password"}
-                      {"kind": "login_complete"}
-                      {"kind": "login_failed", "reason": "..."}
-    swift -> bridge   {"kind": "sms_code", "value": "12345"}
-                      {"kind": "2fa_password", "value": "..."}
-
-If stdin is a TTY (standalone CLI run), the bridge falls back to
-prompting via input() so the dev workflow still works without Swift.
-
-Configuration
--------------
-Preferred (set by the Swift host on launch):
-    DUCTOR_AGENT_CONFIG_JSON   - JSON blob with the keys
-        bot_username, agent_name, api_id, api_hash, phone
-
-Legacy / standalone fallback envs (used by `bridge/README.md` instructions):
-    JARVIS_BOT_USERNAME, JARVIS_PHONE, JARVIS_API_ID, JARVIS_API_HASH
-
-Other envs:
-    JARVIS_PORT_FILE   - if set, the bridge writes its chosen port here
-                          right after binding (handshake for the parent).
-
-The Telethon StringSession is cached via the `keyring` package
-(service `ductor-companion`, account = agent_name). Sessions are scoped
-per-agent so multiple sub-agents on the same Telegram account each get
-their own cached login state.
-
-CLI flags
----------
-    --dry-run       Authenticate + resolve the configured bot username,
-                    then exit 0 on success / non-zero on failure. Used by
-                    the in-app setup wizard's "Test" button.
-    --login-only    Bring up the websocket, perform Telegram auth
-                    (prompting Swift for the SMS code / 2FA over the
-                    websocket), cache the session, then exit. Used by
-                    the first-run wizard before the main app launches
-                    the bridge for real.
-"""
+"""Telegram <-> Ductor Companion bridge. See bridge/README.md."""
 
 from __future__ import annotations
 
@@ -68,7 +14,7 @@ import sys
 import time
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Awaitable, Callable, Optional, Set
+from typing import Optional, Set
 
 try:
     import keyring  # type: ignore
@@ -85,8 +31,6 @@ LOCAL_SESSION_DIR = Path(__file__).with_name(".sessions")
 
 
 def _config_from_env() -> dict[str, str]:
-    """Resolve agent config from either the JSON blob env or the legacy
-    JARVIS_* envs. JSON blob wins when present."""
     blob = os.environ.get("DUCTOR_AGENT_CONFIG_JSON", "").strip()
     if blob:
         try:
@@ -108,10 +52,6 @@ def _config_from_env() -> dict[str, str]:
         "phone": os.environ.get("JARVIS_PHONE", "").strip(),
     }
 
-
-# --------------------------------------------------------------------------- #
-# Session persistence (scoped per-agent)
-# --------------------------------------------------------------------------- #
 
 def load_session(agent_name: str) -> str:
     if keyring is not None:
@@ -143,10 +83,6 @@ def save_session(agent_name: str, session: str) -> None:
         pass
 
 
-# --------------------------------------------------------------------------- #
-# Local websocket fan-out
-# --------------------------------------------------------------------------- #
-
 class Hub:
     def __init__(self) -> None:
         self.clients: Set[websockets.WebSocketServerProtocol] = set()
@@ -167,17 +103,8 @@ class Hub:
         )
 
 
-# --------------------------------------------------------------------------- #
-# Login coordinator — pumps SMS-code / 2FA prompts over the websocket
-# instead of stdin so the in-app wizard can present a sheet.
-# --------------------------------------------------------------------------- #
-
 class LoginCoordinator:
-    """Bridges Telethon's blocking auth prompts to async websocket messages.
-
-    `request_code` / `request_password` broadcast a `needs_*` message and
-    await a future that the websocket handler resolves when Swift replies.
-    """
+    """Bridges Telethon prompts to websocket messages."""
 
     def __init__(self, hub: Hub) -> None:
         self.hub = hub
@@ -212,20 +139,10 @@ def _stdin_is_tty() -> bool:
         return False
 
 
-# --------------------------------------------------------------------------- #
-# Telegram auth
-# --------------------------------------------------------------------------- #
-
 async def _connect_authorized(
     config: dict[str, str],
     coordinator: Optional[LoginCoordinator] = None,
 ) -> Optional[TelegramClient]:
-    """Connect + authenticate. Returns a logged-in TelegramClient or None.
-
-    When `coordinator` is supplied AND stdin is not a TTY, SMS-code and
-    2FA-password prompts are pushed over the websocket. Otherwise they
-    fall back to stdin (legacy / dev path).
-    """
     try:
         api_id = int(config["api_id"])
     except (TypeError, ValueError):
@@ -266,10 +183,6 @@ async def _connect_authorized(
 
     return client
 
-
-# --------------------------------------------------------------------------- #
-# Telegram <-> hub plumbing
-# --------------------------------------------------------------------------- #
 
 async def telegram_main(
     hub: Hub,
@@ -341,10 +254,6 @@ async def telegram_main(
     await asyncio.gather(client.run_until_disconnected(), outbound_loop())
 
 
-# --------------------------------------------------------------------------- #
-# Websocket server
-# --------------------------------------------------------------------------- #
-
 async def ws_main(
     hub: Hub,
     inbound: asyncio.Queue,
@@ -394,10 +303,6 @@ async def ws_main(
         await asyncio.Future()
 
 
-# --------------------------------------------------------------------------- #
-# Dry-run mode
-# --------------------------------------------------------------------------- #
-
 async def dry_run(config: dict[str, str]) -> int:
     if not config["bot_username"]:
         print("[bridge] dry-run: bot_username missing", file=sys.stderr)
@@ -417,17 +322,7 @@ async def dry_run(config: dict[str, str]) -> int:
         await client.disconnect()
 
 
-# --------------------------------------------------------------------------- #
-# Login-only mode — wizard handshake
-# --------------------------------------------------------------------------- #
-
 async def login_only(config: dict[str, str]) -> int:
-    """Bring up the websocket, authenticate (prompting Swift over WS),
-    save the session, and exit.
-
-    Used by the first-run wizard before the main app launches the
-    long-lived bridge. Does NOT require bot_username to be set.
-    """
     hub = Hub()
     inbound: asyncio.Queue = asyncio.Queue()
     coordinator = LoginCoordinator(hub)
@@ -478,10 +373,6 @@ async def login_only(config: dict[str, str]) -> int:
         await ws_task
     return 0
 
-
-# --------------------------------------------------------------------------- #
-# Entry point
-# --------------------------------------------------------------------------- #
 
 async def amain(args: argparse.Namespace) -> int:
     config = _config_from_env()

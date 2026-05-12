@@ -1,23 +1,7 @@
 #!/usr/bin/env bash
 # Provision the Python bridge into the .app's Resources/.
-#
-# Two modes:
-#
-#   default (--venv)      Builds a Python venv next to bridge.py. Used by
-#                         the dev workflow — fast, no PyInstaller dep,
-#                         but requires a Python on the user's machine.
-#
-#   --standalone          Runs bridge/build_standalone.sh (PyInstaller)
-#                         and copies the resulting one-folder bundle to
-#                         <Resources>/bridge_bundled/bridge_app/. The
-#                         shipping DMG uses this mode so end users do
-#                         not need Python installed.
-#
-# Usage:
-#   ./scripts/install_bridge_deps.sh /path/to/Ductor\ Companion.app
-#   ./scripts/install_bridge_deps.sh ./Jarvis/Jarvis/Resources
-#   ./scripts/install_bridge_deps.sh --standalone /path/to/built.app
-#   ./scripts/install_bridge_deps.sh --standalone ./Jarvis/Jarvis/Resources
+#   default          venv mode (dev workflow).
+#   --standalone     PyInstaller bundle (release DMG path).
 
 set -euo pipefail
 

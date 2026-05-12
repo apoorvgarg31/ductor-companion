@@ -1,22 +1,7 @@
 import SwiftUI
 import AppKit
 
-/// Drives the first-run Telegram login as a sheet over the setup wizard.
-///
-/// On appear it spawns `bridge --login-only` with the credentials in
-/// env, reads the websocket port the bridge writes to JARVIS_PORT_FILE,
-/// and follows the WS handshake:
-///
-///     bridge -> needs_sms_code      → show code field
-///     swift  -> sms_code            (user-entered)
-///     bridge -> needs_2fa_password  → show password field (optional)
-///     swift  -> 2fa_password        (user-entered)
-///     bridge -> login_complete      → dismiss + onComplete
-///     bridge -> login_failed        → surface the reason
-///
-/// On success the Telethon StringSession is cached in Keychain by the
-/// bridge, so the long-lived runtime bridge launched immediately after
-/// the wizard finishes never has to prompt again.
+/// Sheet driving the first-run Telegram login over `bridge --login-only`.
 struct TelegramLoginView: View {
     @StateObject private var coordinator: TelegramLoginCoordinator
     @State private var codeInput: String = ""
@@ -133,11 +118,6 @@ struct TelegramLoginView: View {
     }
 }
 
-/// Owns the bridge subprocess + websocket for the wizard's login flow.
-/// Lives only for the duration of the login sheet — once the bridge
-/// reports `login_complete` (or fails), this coordinator is discarded
-/// and the long-lived runtime bridge is launched separately by
-/// `DuctorAppController.start()`.
 final class TelegramLoginCoordinator: NSObject, ObservableObject,
                                        URLSessionDelegate,
                                        URLSessionWebSocketDelegate {
@@ -253,7 +233,6 @@ final class TelegramLoginCoordinator: NSObject, ObservableObject,
             self?.statusLine = "Waiting for bridge to come up…"
         }
 
-        // Poll the port file the bridge writes after binding.
         let deadline = Date().addingTimeInterval(10)
         var port: Int = 0
         while Date() < deadline {

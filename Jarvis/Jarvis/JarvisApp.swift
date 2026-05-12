@@ -1,10 +1,8 @@
 import SwiftUI
 import AppKit
 
-/// Resolves the bridge entry point (PyInstaller-bundled Mach-O,
-/// dev-time venv, or fall-back system python3) and builds a `Process`
-/// ready to launch. Shared between the long-lived runtime bridge and
-/// the wizard's `--login-only` invocation.
+/// Resolves the bridge entry point (bundled Mach-O > dev venv > system
+/// python3) and builds a Process ready to launch.
 struct BridgeLauncher {
     let resources: URL?
 
@@ -30,9 +28,6 @@ struct BridgeLauncher {
         return FileManager.default.fileExists(atPath: url.path) ? url : nil
     }
 
-    /// Build a Process pre-configured with the right executable + args.
-    /// Returns nil when no bridge entry point can be found inside the
-    /// app bundle.
     func makeProcess(extraArgs: [String] = []) -> Process? {
         let proc = Process()
         if let bundled = bundledBinary {

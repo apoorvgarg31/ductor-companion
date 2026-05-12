@@ -1,32 +1,12 @@
 # -*- mode: python ; coding: utf-8 -*-
-#
-# PyInstaller spec for the Ductor Companion bridge.
-#
-# Produces dist/bridge_app/ — a "one-folder" bundle containing a
-# self-contained `bridge` Mach-O launcher plus a `_internal/` directory
-# of vendored libraries (telethon, websockets, keyring, Pillow, …).
-#
-# The resulting bundle is copied into the .app's Resources/bridge_bundled/
-# at packaging time so end users don't need Python installed.
-#
-# Build:
-#   pyinstaller build_standalone.spec --clean --noconfirm
-# or:
-#   bash build_standalone.sh
-#
-# Architecture: defaults to the host architecture (arm64 on Apple
-# Silicon CI runners). True universal2 builds require both arm64 and
-# x86_64 Python toolchains side-by-side, which is fiddly in CI; for
-# v0.1.0 we ship arm64-only and document the Rosetta trade-off in
-# README.md. Set target_arch='universal2' below to enable it once the
-# CI image supports it.
+# PyInstaller spec for the bridge. Output: dist/bridge_app/ (one-folder).
+# Build via: bash build_standalone.sh
 
 from PyInstaller.utils.hooks import collect_submodules
 
 block_cipher = None
 
-# Telethon / websockets / keyring use late-binding imports and module
-# discovery tricks; PyInstaller can't see them through Analysis alone.
+# Telethon / keyring use late-binding module discovery.
 hidden_imports = (
     collect_submodules('keyring')
     + collect_submodules('keyring.backends')

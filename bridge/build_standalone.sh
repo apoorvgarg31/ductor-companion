@@ -1,11 +1,6 @@
 #!/usr/bin/env bash
-# Build the PyInstaller one-folder bundle for the Telethon bridge.
-#
-# Output: bridge/dist/bridge_app/  (contains `bridge` Mach-O + _internal/)
-#
-# The .app packaging step copies that folder into
-# Jarvis/Jarvis/Resources/bridge_bundled/ so end-users don't need
-# Python installed.
+# Build the PyInstaller one-folder bundle for the bridge.
+# Output: bridge/dist/bridge_app/ (Mach-O `bridge` + _internal/).
 
 set -euo pipefail
 
