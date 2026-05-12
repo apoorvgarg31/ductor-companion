@@ -43,6 +43,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func presentWizard(firstRun: Bool) {
         let wizard = SetupWizardView(
+            firstRun: firstRun,
             onCancel: { [weak self] in
                 self?.dismissWizard()
                 if firstRun { NSApp.terminate(nil) }
@@ -58,7 +59,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         let win = NSWindow(contentViewController: host)
         win.title = "Ductor Companion — Setup"
         win.styleMask = [.titled, .closable]
-        win.setContentSize(NSSize(width: 560, height: 540))
+        win.setContentSize(NSSize(width: 580, height: 580))
         win.center()
         win.isReleasedWhenClosed = false
         wizardWindow = win

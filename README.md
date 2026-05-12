@@ -50,49 +50,94 @@ On first launch macOS will ask for **Accessibility** (needed) and
 
 ## The first-run wizard
 
-The first time the app starts, a 3-step sheet walks you through setup.
-There's nothing to configure manually beforehand.
+The first time the app starts, a sheet walks you through five steps. The
+Companion integrates directly with Ductor's local `agents.json` —
+there's no separate scripting to run.
 
-### Step 1 — Telegram credentials
+### Step 1 — Locate Ductor
 
-The companion authenticates as a **Telegram user account** (not a bot),
-so it can listen to bot chats. That requires your own
-`api_id` / `api_hash`:
+The Companion looks for `agents.json` in this order:
 
-* Go to https://my.telegram.org/apps and sign in with the phone you'll
-  use here.
-* Create a new application (any name).
-* Paste the values into the wizard along with your phone number.
+1. The path saved from a previous run (Settings → Agents → Ductor home).
+2. `$DUCTOR_HOME/agents.json`.
+3. `~/.ductor/agents.json`.
 
-These three values are written to the macOS Keychain (service
-`ductor-companion`). They never appear in UserDefaults or on disk.
+On success, you see "✓ Ductor detected at &lt;path&gt;" and Next is
+enabled. If nothing is found, you get a "View Ductor on GitHub" link
+([ductor repo](https://github.com/PleasePrompto/ductor)), a "Choose
+Ductor home folder…" picker for non-default installs, and an "I'll
+install it later" button that quits the app.
 
-### Step 2 — Connect a Ductor agent
+### Step 2 — Pick or create an agent
 
-Pick a path:
+The wizard reads every Telegram-transport entry out of `agents.json`
+and renders them as a radio list. Pick one to skip ahead to Step 4, or
+choose **➕ Create new agent** to open the form in Step 3.
 
-* **I have a bot username.** Paste it (without `@`) and click **Test**.
-  The bridge spawns in dry-run mode, logs into Telegram, resolves the
-  username, and reports success or failure inline.
-* **Spin up a new agent.** Provide the username of the **Ductor main
-  bot** (the one that mints sub-agents for you). The wizard opens that
-  chat via `tg://resolve?domain=…`, you ask it to mint a new agent the
-  usual way, then paste the resulting bot username back into the
-  wizard.
+Matrix-transport agents are filtered out — they're out of scope for the
+Telethon-based bridge (see Open Decisions below).
 
-If Test reports "Telegram session not yet authorized", run the bridge
-once from a terminal (see [bridge/README.md](bridge/README.md)) so you
-can type the SMS code. The session is then cached in the Keychain and
-the wizard's Test will succeed on retry.
+### Step 3 — Create a new agent (only if you chose to)
 
-### Step 3 — Name the agent
+This step writes a new entry into `agents.json` *natively from Swift*
+— the Companion does not shell out to `create_agent.py`. The
+AgentSupervisor file-watches that file and boots the agent within
+seconds.
 
-The wizard pre-fills sensible defaults derived from the bot username
-(`jarvis_apoorv_bot` → slug `jarvis`, display name "Jarvis", sprite path
-`~/.codex/pets/jarvis/`). Adjust intervals + quiet hours, then **Finish**.
+Form fields:
+
+| Field | Notes |
+| --- | --- |
+| Slug | Lowercase, no spaces, not `main`. Validated inline. |
+| Description | Multi-line, written into the new agent's `JOIN_NOTIFICATION.md`. |
+| Provider | `claude` / `openai` / `gemini`. |
+| Model | `opus`/`sonnet`/`haiku` for Claude; e.g. `gpt-5.3-codex` for OpenAI; `gemini-2.5-pro` for Gemini. |
+| BotFather token | `SecureField`. There's an "Open @BotFather" button — run `/newbot` in the chat and paste the token here. |
+| Allowed Telegram user IDs | Comma-separated integers. Find yours via @userinfobot. |
+
+When you click **Create & continue**, the Companion:
+
+1. Validates fields.
+2. Reads `agents.json`, appends the new entry, and writes the file
+   atomically (`tmp → rename`) so the supervisor never sees a partial
+   file.
+3. Writes `<DUCTOR_HOME>/agents/<slug>/workspace/JOIN_NOTIFICATION.md`
+   with the description.
+4. Polls for `<DUCTOR_HOME>/agents/<slug>/workspace/MAINMEMORY.md`
+   (up to 30 s) — that's the marker the supervisor drops when the
+   agent has started. On success → Step 4. On timeout it logs a
+   warning and continues anyway; the agent often starts shortly after.
+
+### Step 4 — Pet details
+
+Defaults derived from the slug:
+
+* Display name: capitalized slug.
+* Sprite path: `~/.codex/pets/<slug>/`.
+* Heartbeat every 2 min, screenshots off, screenshot interval 5 min,
+  quiet hours 22:00 – 08:00.
+
+All editable here and later in Settings.
+
+### Step 5 — Telegram user-account credentials
+
+Only shown when the Keychain doesn't already have phone / api_id /
+api_hash. These are the *user-account* credentials the Telethon bridge
+needs to log in and listen to the bot's chat — distinct from the
+BotFather token (which the bridge never sees; that lives in
+`agents.json` for the Ductor side).
+
+* https://my.telegram.org/apps gives you a free api_id / api_hash.
+* Phone is your Telegram-account phone number.
+
+Stored in macOS Keychain under service `ductor-companion`.
 
 The wizard closes, the pet drops into the bottom-right corner of your
-screen, and the bridge starts watching the bot chat.
+screen, and the bridge starts.
+
+**Re-opening the wizard.** Tray → "Add agent…" or Settings → "Add
+agent…" reopens the wizard starting at Step 2 (Ductor is already
+detected, credentials are already cached).
 
 ---
 
@@ -207,14 +252,24 @@ ductor-companion/
   Privacy & Security → Accessibility.
 * **Screenshots never send** → Settings → enable per-agent. If still
   nothing, quiet hours may be active.
-* **Wizard's Test always fails with "needs interactive login"** → the
-  first SMS-code login has to happen in a real terminal:
+* **First SMS-code login** has to happen in a real terminal (Telethon
+  reads it from stdin):
   ```bash
-  cd bridge && python bridge.py
+  cd bridge && source .venv/bin/activate
+  export JARVIS_BOT_USERNAME=<your-bot-handle>
+  export JARVIS_PHONE=+15551234567 JARVIS_API_ID=… JARVIS_API_HASH=…
+  python bridge.py
   # paste code, ctrl-C once you see "watching @<bot>"
   ```
-  After that the Keychain has a valid session and the wizard's Test
-  succeeds without any prompt.
+  The StringSession is then cached in Keychain (service
+  `ductor-companion`, account = agent slug) and subsequent launches are
+  silent.
+* **Wizard "agents.json malformed"** → open it manually, fix the JSON,
+  or back it up and let the wizard write a fresh entry. The Companion
+  refuses to overwrite a file it can't parse.
+* **Supervisor didn't write MAINMEMORY.md within 30 s** → look at the
+  Ductor logs; the most common cause is the BotFather token being
+  rejected or a model name the provider doesn't recognize.
 
 ---
 
@@ -225,29 +280,46 @@ ductor-companion/
    top-level `rows: ["idle","waving",...]` array or a list of
    `animations[].name` objects, falling back to a default ordering when
    absent.
-2. **Telegram API id/hash storage** — Keychain, service
+2. **Telegram API id/hash storage** — macOS Keychain, service
    `ductor-companion`, accounts `telegram.api_id` / `telegram.api_hash`
    / `telegram.phone`.
-3. **Ductor "main bot"** — the wizard's "create new agent" path opens
-   whatever username is stored at `Config.ductorMainBotUsername`.
-   There's no built-in default; the wizard prompts on first use and
-   re-uses the value thereafter. Stored in UserDefaults under
-   `ductor.mainBotUsername`.
-4. **"Ductor-ish" bot pattern** — we **do not** filter or validate
-   usernames against a regex. The user types or pastes whatever they
-   like; the wizard's Test step is the source of truth for "is this
-   real."
-5. **First-run SMS-code prompt** is on stdin, not in the GUI. The
-   wizard's dry-run Test closes stdin so it fails fast rather than
-   hanging on `input()`. Documented workaround: run the bridge once
-   from a terminal for the initial login.
-6. **Heartbeat schema** always includes `frontmost_app`, `window_title`
+3. **Ductor home resolution** — checked in this order: saved
+   `ductor.homePath` UserDefault, `DUCTOR_HOME` env, `~/.ductor`. The
+   wizard's Step 1 falls back to an `NSOpenPanel` if none contain
+   `agents.json`. Picked path is persisted for re-entry.
+4. **Native `agents.json` writes** — the wizard's "Create agent" path
+   does **not** shell out to `create_agent.py`. It reads, mutates, and
+   atomically rewrites `agents.json` from Swift to match Ductor's
+   AgentSupervisor file-watcher contract. The schema mirror is in
+   `DuctorRegistry` (Telegram-only). This keeps the Companion
+   self-contained — no Python on PATH required, no need to find the
+   user's Ductor source tree.
+5. **Supervisor readiness signal** — we wait for
+   `<DUCTOR_HOME>/agents/<slug>/workspace/MAINMEMORY.md` (up to 30 s)
+   as the "agent has started" marker. On timeout we log a warning and
+   proceed; the agent often appears moments later.
+6. **Matrix transport is out of scope** — Step 2 filters
+   `agents.json` to entries where `transport` is missing (Telegram is
+   the default) or equals `"telegram"`. The Telethon bridge has no
+   Matrix support today.
+7. **First-run SMS-code prompt** is still on stdin in the standalone
+   `bridge/` flow. For the in-app bridge, you'll need to run the
+   bridge once from a terminal to enter the code; the StringSession is
+   then cached in Keychain and the in-app launch is silent.
+8. **Heartbeat schema** always includes `frontmost_app`, `window_title`
    (best-effort), `idle_seconds`, `quiet_hour`.
-7. **WebP** via built-in `NSImage(contentsOf:)` (macOS 11+) — no
+9. **WebP** via built-in `NSImage(contentsOf:)` (macOS 11+) — no
    third-party image library.
-8. **One Telegram account** — the bridge keys sessions by agent slug,
-   but the same `api_id`/`api_hash`/`phone` are used across agents.
-   Multi-account would need per-agent credential storage.
+10. **One Telegram account** — the bridge keys Telethon sessions by
+    agent slug, but the same `api_id`/`api_hash`/`phone` are used
+    across all agents on a given Mac. Multi-account would need
+    per-agent credential storage.
+11. **Bot username on AgentProfile is optional.** The Companion knows
+    which agent to talk to via the BotFather token in `agents.json`
+    (server-side), but the tap-to-open deep link
+    (`tg://resolve?domain=…`) needs the human-facing @handle. The
+    wizard doesn't ask for it; fill it in from Settings if you want
+    the click-to-open shortcut to work.
 
 ---
 

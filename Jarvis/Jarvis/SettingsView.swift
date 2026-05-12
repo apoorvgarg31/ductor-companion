@@ -1,13 +1,12 @@
 import SwiftUI
+import AppKit
 
 /// Tabbed settings panel.
 ///
-/// Tab 1 — Agents: list of configured agents, add/edit/delete, plus the
-///                 per-agent intervals and quiet hours for the currently
-///                 selected agent.
-/// Tab 2 — Telegram: shared credentials (api id/hash/phone in Keychain)
-///                  + Ductor "main bot" username for the wizard's
-///                  "spawn new agent" path.
+/// Tab 1 — Agents: list of configured pet profiles, the active agent's
+///                 per-agent settings, and the Ductor home path with a
+///                 "Reveal agents.json" button.
+/// Tab 2 — Telegram: shared credentials (api id/hash/phone in Keychain).
 struct SettingsView: View {
     weak var controller: DuctorAppController?
     @ObservedObject private var config: Config = .shared
@@ -21,7 +20,7 @@ struct SettingsView: View {
                 .tabItem { Label("Telegram", systemImage: "key.fill") }
         }
         .padding(12)
-        .frame(width: 540, height: 580)
+        .frame(width: 560, height: 600)
     }
 }
 
@@ -34,7 +33,7 @@ private struct AgentsTab: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Configured agents").font(.headline)
+                Text("Pet profiles").font(.headline)
                 Spacer()
                 Button {
                     controller?.presentSetupWizard()
@@ -57,7 +56,9 @@ private struct AgentsTab: View {
                                                 ? Color.accentColor : .secondary)
                         VStack(alignment: .leading) {
                             Text(agent.displayName).font(.body)
-                            Text("@\(agent.botUsername)")
+                            Text(agent.botUsername.isEmpty
+                                 ? "(no bot username)"
+                                 : "@\(agent.botUsername)")
                                 .font(.caption)
                                 .foregroundStyle(.secondary)
                         }
@@ -73,7 +74,9 @@ private struct AgentsTab: View {
                     .contentShape(Rectangle())
                 }
             }
-            .frame(maxHeight: 180)
+            .frame(maxHeight: 160)
+
+            DuctorHomeRow()
 
             if let selected = config.selectedAgent {
                 Divider()
@@ -96,13 +99,41 @@ private struct AgentsTab: View {
     }
 }
 
+private struct DuctorHomeRow: View {
+    @ObservedObject private var config: Config = .shared
+    @State private var resolved: URL? = Config.shared.resolveDuctorHome()
+
+    var body: some View {
+        GroupBox(label: Label("Ductor home", systemImage: "folder")) {
+            HStack {
+                Text(resolved?.path ?? "(not detected)")
+                    .font(.system(.callout, design: .monospaced))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+                    .truncationMode(.middle)
+                Spacer()
+                Button("Reveal agents.json") {
+                    guard let home = resolved else { return }
+                    let url = home.appendingPathComponent("agents.json")
+                    NSWorkspace.shared.activateFileViewerSelecting([url])
+                }
+                .disabled(resolved == nil)
+                Button("Refresh") {
+                    resolved = config.resolveDuctorHome()
+                }
+            }
+        }
+    }
+}
+
 private struct AgentEditor: View {
     @Binding var agent: AgentProfile
 
     var body: some View {
         Form {
             TextField("Display name", text: $agent.displayName)
-            TextField("Bot username", text: $agent.botUsername)
+            TextField("Bot username (optional, for the tap-to-open deep link)",
+                      text: $agent.botUsername)
             TextField("Sprite path", text: $agent.spritePath)
             Toggle("Periodic screenshots", isOn: $agent.screenshotsEnabled)
             Stepper(value: $agent.heartbeatInterval, in: 30...3600, step: 30) {
@@ -150,11 +181,11 @@ private struct TelegramTab: View {
                     }
                 }
             }
-            Section("Ductor main bot") {
-                TextField("Main bot username (used for spawning new agents)",
-                          text: $config.ductorMainBotUsername)
-                Text("The wizard's \"create new agent\" path opens this bot's "
-                     + "chat so Ductor can mint a fresh sub-agent for you.")
+            Section {
+                Text("These credentials are used by the Telethon bridge to "
+                     + "log into Telegram as your user account and listen to "
+                     + "the agent's bot chat. They're stored in macOS Keychain "
+                     + "under service `ductor-companion`.")
                     .font(.footnote)
                     .foregroundStyle(.secondary)
             }

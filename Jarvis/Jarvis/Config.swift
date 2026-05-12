@@ -5,7 +5,7 @@ import AppKit
 ///   * the list of configured Ductor agents
 ///   * which one is currently active
 ///   * pet window position + visibility flags
-///   * the Ductor "main bot" the wizard opens for new-agent creation
+///   * the resolved Ductor home path (containing agents.json)
 ///
 /// Per-agent settings (intervals, sprite path, bot username, quiet hours)
 /// live on `AgentProfile` and are mutated via `updateSelectedAgent(_:)`.
@@ -18,7 +18,7 @@ final class Config: ObservableObject {
     private enum Key {
         static let agents = "ductor.agents.v1"
         static let selectedAgentID = "ductor.selectedAgentID"
-        static let ductorMainBotUsername = "ductor.mainBotUsername"
+        static let ductorHomePath = "ductor.homePath"
         static let petPositionX = "ductor.petPositionX"
         static let petPositionY = "ductor.petPositionY"
         static let bridgePort = "ductor.bridgePort"
@@ -38,8 +38,10 @@ final class Config: ObservableObject {
             }
         }
     }
-    @Published var ductorMainBotUsername: String {
-        didSet { defaults.set(ductorMainBotUsername, forKey: Key.ductorMainBotUsername) }
+    /// Path to the user's Ductor home directory (the one containing
+    /// `agents.json`). Picked up by the wizard and persisted for re-entry.
+    @Published var ductorHomePath: String {
+        didSet { defaults.set(ductorHomePath, forKey: Key.ductorHomePath) }
     }
     @Published var bridgePort: Int {
         didSet { defaults.set(bridgePort, forKey: Key.bridgePort) }
@@ -53,7 +55,7 @@ final class Config: ObservableObject {
 
     private init() {
         defaults.register(defaults: [
-            Key.ductorMainBotUsername: "",
+            Key.ductorHomePath: "",
             Key.bridgePort: 0,
             Key.petVisible: true,
             Key.sensorsPaused: false,
@@ -75,7 +77,7 @@ final class Config: ObservableObject {
             self.selectedAgentID = loaded.first?.id
         }
 
-        self.ductorMainBotUsername = defaults.string(forKey: Key.ductorMainBotUsername) ?? ""
+        self.ductorHomePath = defaults.string(forKey: Key.ductorHomePath) ?? ""
         self.bridgePort = defaults.integer(forKey: Key.bridgePort)
         self.petVisible = defaults.bool(forKey: Key.petVisible)
         self.sensorsPaused = defaults.bool(forKey: Key.sensorsPaused)
@@ -163,6 +165,35 @@ final class Config: ObservableObject {
     }
 
     // MARK: - Helpers
+
+    // MARK: - Ductor home resolution
+
+    /// Resolve a usable Ductor home URL by checking, in order:
+    ///   1. The saved `ductorHomePath` (if it exists on disk).
+    ///   2. The `DUCTOR_HOME` env var.
+    ///   3. `~/.ductor/`.
+    /// Returns nil if none of those directories contain `agents.json`.
+    func resolveDuctorHome() -> URL? {
+        let fm = FileManager.default
+        var candidates: [URL] = []
+        if !ductorHomePath.isEmpty {
+            candidates.append(URL(fileURLWithPath: (ductorHomePath as NSString).expandingTildeInPath,
+                                  isDirectory: true))
+        }
+        if let env = ProcessInfo.processInfo.environment["DUCTOR_HOME"], !env.isEmpty {
+            candidates.append(URL(fileURLWithPath: (env as NSString).expandingTildeInPath,
+                                  isDirectory: true))
+        }
+        candidates.append(fm.homeDirectoryForCurrentUser.appendingPathComponent(".ductor",
+                                                                                isDirectory: true))
+        for url in candidates {
+            let agentsJSON = url.appendingPathComponent("agents.json")
+            if fm.fileExists(atPath: agentsJSON.path) {
+                return url
+            }
+        }
+        return nil
+    }
 
     /// Deep link into the active agent's Telegram chat.
     func telegramDeepLink() -> URL? {

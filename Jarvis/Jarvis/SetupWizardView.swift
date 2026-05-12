@@ -1,38 +1,51 @@
 import SwiftUI
 import AppKit
 
-/// 3-step modal wizard shown on first launch (and any time the user picks
-/// "Add agent…" from the tray). Drives the user through:
+/// Five-step setup sheet.
 ///
-///   1. Telegram API credentials (phone, api_id, api_hash) — written to Keychain.
-///   2. Bot connection — paste an existing agent's username and test it,
-///      OR open the Ductor "main bot" chat to spawn a new sub-agent and
-///      paste the new bot's username back in.
-///   3. Agent details — slug, display name, sprite path, intervals,
-///      quiet hours — then persist the AgentProfile.
+///   1. Locate Ductor — find `<DUCTOR_HOME>/agents.json`.
+///   2. Pick existing agent OR create a new one.
+///   3. New-agent form — written natively to `agents.json` so the
+///      Ductor AgentSupervisor picks it up via its file watcher.
+///   4. Sprite / intervals / quiet hours for the chosen agent.
+///   5. Telegram user-account credentials for the Telethon bridge
+///      (skipped if already in Keychain).
 ///
-/// On `Cancel` from anywhere, the wizard reports cancellation via
-/// `onCancel` (the host typically terminates the app on first run, or
-/// just dismisses the sheet for subsequent invocations).
+/// When the user re-enters from the tray ("Add agent…") the wizard
+/// starts at step 2 — Ductor is already detected and credentials are
+/// almost always already cached.
 struct SetupWizardView: View {
-    enum Step: Int, CaseIterable { case credentials, connect, details }
+    enum Step: Int, CaseIterable {
+        case locateDuctor
+        case pickAgent
+        case createAgent
+        case agentDetails
+        case telegramCreds
+    }
 
     @ObservedObject private var config = Config.shared
-    @State private var step: Step = .credentials
+    @State private var step: Step
+    private let firstRun: Bool
 
-    // Step 1 fields
-    @State private var phone: String = Config.shared.telegramPhone
-    @State private var apiID: String = Config.shared.telegramAPIID
-    @State private var apiHash: String = Config.shared.telegramAPIHash
-    @State private var step1Error: String?
+    // Step 1 — Ductor detection
+    @State private var ductorHome: URL?
+    @State private var manualHomeError: String?
 
-    // Step 2 fields
-    @State private var botUsername: String = ""
-    @State private var mainBotInput: String = Config.shared.ductorMainBotUsername
-    @State private var testStatus: TestStatus = .idle
-    @State private var creatingNew: Bool = false
+    // Step 2 — Agent list
+    @State private var registry: [DuctorAgent] = []
+    @State private var loadError: String?
+    @State private var selection: Selection = .none
 
-    // Step 3 fields
+    // Step 3 — Create new agent form
+    @State private var newSlug: String = ""
+    @State private var newDescription: String = ""
+    @State private var newProvider: String = "claude"
+    @State private var newModel: String = "sonnet"
+    @State private var newToken: String = ""
+    @State private var newUserIDs: String = ""
+    @State private var createState: CreateState = .idle
+
+    // Step 4 — Sprite/intervals
     @State private var slug: String = ""
     @State private var displayName: String = ""
     @State private var spritePath: String = ""
@@ -42,13 +55,40 @@ struct SetupWizardView: View {
     @State private var quietStart: Int = 22
     @State private var quietEnd: Int = 8
 
+    // Step 5 — Telegram credentials
+    @State private var phone: String = Config.shared.telegramPhone
+    @State private var apiID: String = Config.shared.telegramAPIID
+    @State private var apiHash: String = Config.shared.telegramAPIHash
+    @State private var credsError: String?
+
     var onCancel: () -> Void = {}
     var onFinish: (AgentProfile) -> Void = { _ in }
-    var bridgeRunner: BridgeDryRunRunner = .systemPython
 
-    enum TestStatus: Equatable {
-        case idle, running, ok(String), failed(String)
+    enum Selection: Equatable {
+        case none
+        case existing(String) // agent name
+        case createNew
     }
+
+    enum CreateState: Equatable {
+        case idle
+        case validating(String)
+        case writing
+        case waitingForSupervisor
+        case ready
+        case failed(String)
+    }
+
+    init(firstRun: Bool = true,
+         onCancel: @escaping () -> Void = {},
+         onFinish: @escaping (AgentProfile) -> Void = { _ in }) {
+        self.firstRun = firstRun
+        self.onCancel = onCancel
+        self.onFinish = onFinish
+        _step = State(initialValue: firstRun ? .locateDuctor : .pickAgent)
+    }
+
+    // MARK: - Layout
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
@@ -60,22 +100,20 @@ struct SetupWizardView: View {
             footer
         }
         .padding(20)
-        .frame(width: 560, height: 540)
+        .frame(width: 580, height: 580)
+        .onAppear { onAppear() }
     }
-
-    // MARK: - Sections
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text(headerTitle)
-                .font(.title2.bold())
-            Text(headerSubtitle)
-                .font(.callout)
-                .foregroundStyle(.secondary)
+            Text(headerTitle).font(.title2.bold())
+            Text(headerSubtitle).font(.callout).foregroundStyle(.secondary)
             HStack(spacing: 6) {
-                ForEach(Step.allCases, id: \.rawValue) { s in
+                ForEach(visibleSteps, id: \.rawValue) { s in
                     Circle()
-                        .fill(s.rawValue <= step.rawValue ? Color.accentColor : Color.secondary.opacity(0.25))
+                        .fill(s.rawValue <= step.rawValue
+                              ? Color.accentColor
+                              : Color.secondary.opacity(0.25))
                         .frame(width: 8, height: 8)
                 }
             }
@@ -85,30 +123,44 @@ struct SetupWizardView: View {
 
     private var headerTitle: String {
         switch step {
-        case .credentials: return "1. Telegram credentials"
-        case .connect: return "2. Connect a Ductor agent"
-        case .details: return "3. Name the agent"
+        case .locateDuctor: return "1. Locate Ductor"
+        case .pickAgent: return "2. Pick a Ductor agent"
+        case .createAgent: return "3. Create a new agent"
+        case .agentDetails: return "4. Pet details"
+        case .telegramCreds: return "5. Telegram credentials"
         }
     }
+
     private var headerSubtitle: String {
         switch step {
-        case .credentials:
-            return "Ductor Companion logs into Telegram as your user account, "
-            + "not a bot, so it can listen to bot chats."
-        case .connect:
-            return "Tell us which Telegram bot represents this agent. "
-            + "You can paste an existing username, or open the Ductor main "
-            + "chat to spin up a new sub-agent."
-        case .details:
-            return "Final details. You can change all of these later in Settings."
+        case .locateDuctor:
+            return "Ductor stores its sub-agents in agents.json. The Companion "
+            + "talks to that file directly — no separate bot scripting needed."
+        case .pickAgent:
+            return "Choose an existing agent for the pet to represent, or "
+            + "spin up a brand-new one. New agents auto-start within a few "
+            + "seconds once written to agents.json."
+        case .createAgent:
+            return "These fields are written natively into agents.json. The "
+            + "Ductor AgentSupervisor file-watches that file and boots the "
+            + "agent for you."
+        case .agentDetails:
+            return "How the pet looks and how often it pings. All editable "
+            + "later in Settings."
+        case .telegramCreds:
+            return "The bridge logs in as your Telegram **user** so it can "
+            + "watch bot chats. Get a free api_id / api_hash from "
+            + "my.telegram.org/apps."
         }
     }
 
     @ViewBuilder private var content: some View {
         switch step {
-        case .credentials: stepCredentials
-        case .connect: stepConnect
-        case .details: stepDetails
+        case .locateDuctor: stepLocate
+        case .pickAgent: stepPick
+        case .createAgent: stepCreate
+        case .agentDetails: stepDetails
+        case .telegramCreds: stepCreds
         }
     }
 
@@ -116,109 +168,333 @@ struct SetupWizardView: View {
         HStack {
             Button("Cancel", role: .cancel) { onCancel() }
             Spacer()
-            if step != .credentials {
+            if step != firstStep {
                 Button("Back") { goBack() }
+                    .disabled(!canGoBack)
             }
-            Button(step == .details ? "Finish" : "Next") { advance() }
+            Button(advanceButtonLabel) { advance() }
                 .keyboardShortcut(.defaultAction)
                 .disabled(!canAdvance)
         }
     }
 
-    // MARK: - Step 1
+    private var firstStep: Step { firstRun ? .locateDuctor : .pickAgent }
 
-    private var stepCredentials: some View {
-        VStack(alignment: .leading, spacing: 10) {
-            TextField("Phone (e.g. +15551234567)", text: $phone)
-                .textFieldStyle(.roundedBorder)
-            HStack(spacing: 10) {
-                TextField("API id", text: $apiID)
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 160)
-                TextField("API hash", text: $apiHash)
-                    .textFieldStyle(.roundedBorder)
-            }
-            Link("Get a free api_id / api_hash from my.telegram.org/apps →",
-                 destination: URL(string: "https://my.telegram.org/apps")!)
-                .font(.footnote)
-            if let err = step1Error {
-                Text(err).font(.footnote).foregroundStyle(.red)
+    private var visibleSteps: [Step] {
+        // The progress dots reflect the flow length the user will see.
+        var s: [Step] = firstRun ? [.locateDuctor, .pickAgent] : [.pickAgent]
+        if selection == .createNew { s.append(.createAgent) }
+        s.append(.agentDetails)
+        if !config.hasTelegramCredentials { s.append(.telegramCreds) }
+        return s
+    }
+
+    private var advanceButtonLabel: String {
+        if step == .telegramCreds { return "Finish" }
+        if step == .agentDetails && config.hasTelegramCredentials { return "Finish" }
+        if step == .createAgent { return "Create & continue" }
+        return "Next"
+    }
+
+    private func onAppear() {
+        if firstRun || ductorHome == nil {
+            detectDuctor()
+        }
+        // Pre-load registry when we land on step 2.
+        if step == .pickAgent { loadRegistry() }
+    }
+
+    // MARK: - Step 1 — locate Ductor
+
+    private var stepLocate: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            if let home = ductorHome {
+                Label("Ductor detected at \(home.path)",
+                      systemImage: "checkmark.circle.fill")
+                    .foregroundStyle(.green)
+                Text("agents.json: \(home.appendingPathComponent("agents.json").path)")
+                    .font(.footnote).foregroundStyle(.secondary)
+            } else {
+                Label("Ductor is not installed on this Mac",
+                      systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.orange)
+                Text("Ductor is the local agent orchestrator that the Companion "
+                     + "talks to. Install it, or point to a non-default location.")
+                    .font(.footnote)
+                    .foregroundStyle(.secondary)
+
+                HStack {
+                    Link("View Ductor on GitHub",
+                         destination: URL(string: "https://github.com/PleasePrompto/ductor")!)
+                    Spacer()
+                    Button("Choose Ductor home folder…") { pickHomeFolder() }
+                    Button("I'll install it later") { onCancel() }
+                }
+                if let err = manualHomeError {
+                    Text(err).font(.footnote).foregroundStyle(.red)
+                }
             }
         }
     }
 
-    // MARK: - Step 2
-
-    private var stepConnect: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Picker("", selection: $creatingNew) {
-                Text("I have a bot username").tag(false)
-                Text("Spin up a new agent in Ductor").tag(true)
+    private func detectDuctor() {
+        if let url = config.resolveDuctorHome() {
+            ductorHome = url
+            if config.ductorHomePath.isEmpty {
+                config.ductorHomePath = url.path
             }
-            .pickerStyle(.segmented)
+        } else {
+            ductorHome = nil
+        }
+    }
 
-            if creatingNew {
-                VStack(alignment: .leading, spacing: 8) {
-                    Text("First, the Ductor main bot username (the bot that "
-                         + "creates sub-agents for you):")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
-                    TextField("e.g. ductor_main_bot", text: $mainBotInput)
-                        .textFieldStyle(.roundedBorder)
-                    Button("Open Ductor main chat") {
-                        let trimmed = mainBotInput.trimmingCharacters(in: CharacterSet(charactersIn: "@ "))
-                        guard !trimmed.isEmpty else { return }
-                        config.ductorMainBotUsername = trimmed
-                        if let url = URL(string: "tg://resolve?domain=\(trimmed)") {
+    private func pickHomeFolder() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Pick the directory that contains agents.json (typically ~/.ductor)"
+        panel.prompt = "Choose"
+        if panel.runModal() == .OK, let url = panel.url {
+            let target = url.appendingPathComponent("agents.json")
+            if FileManager.default.fileExists(atPath: target.path) {
+                config.ductorHomePath = url.path
+                ductorHome = url
+                manualHomeError = nil
+            } else {
+                manualHomeError = "agents.json not found in \(url.path)."
+            }
+        }
+    }
+
+    // MARK: - Step 2 — pick an agent
+
+    private var stepPick: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            if let err = loadError {
+                Label(err, systemImage: "exclamationmark.triangle.fill")
+                    .foregroundStyle(.red)
+            }
+
+            List {
+                ForEach(registry, id: \.name) { agent in
+                    pickRow(
+                        title: agent.name,
+                        subtitle: agent.subtitle,
+                        selected: selection == .existing(agent.name)
+                    ) {
+                        selection = .existing(agent.name)
+                    }
+                }
+                pickRow(title: "Create new agent",
+                        subtitle: "Writes a new entry into agents.json",
+                        systemImage: "plus.circle",
+                        selected: selection == .createNew) {
+                    selection = .createNew
+                }
+            }
+            .frame(minHeight: 260)
+        }
+    }
+
+    @ViewBuilder
+    private func pickRow(title: String,
+                         subtitle: String,
+                         systemImage: String = "person.crop.circle",
+                         selected: Bool,
+                         action: @escaping () -> Void) -> some View {
+        HStack {
+            Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                .foregroundStyle(selected ? Color.accentColor : .secondary)
+            Image(systemName: systemImage).foregroundStyle(.secondary)
+            VStack(alignment: .leading) {
+                Text(title).font(.body)
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            }
+            Spacer()
+        }
+        .contentShape(Rectangle())
+        .onTapGesture(perform: action)
+    }
+
+    private func loadRegistry() {
+        guard let home = ductorHome ?? config.resolveDuctorHome() else {
+            loadError = "Ductor home not set."
+            return
+        }
+        ductorHome = home
+        do {
+            registry = try DuctorRegistry.loadTelegramAgents(at: home)
+            loadError = nil
+        } catch {
+            loadError = "Could not read agents.json: \(error.localizedDescription)"
+            registry = []
+        }
+    }
+
+    // MARK: - Step 3 — create a new agent
+
+    private var stepCreate: some View {
+        Form {
+            Section("Identity") {
+                TextField("Slug (lowercase, no spaces, not 'main')", text: $newSlug)
+                Text("Description (saved to the agent's JOIN_NOTIFICATION.md)")
+                    .font(.caption).foregroundStyle(.secondary)
+                TextEditor(text: $newDescription)
+                    .frame(height: 64)
+                    .border(Color.secondary.opacity(0.2))
+            }
+            Section("Model") {
+                Picker("Provider", selection: $newProvider) {
+                    Text("Claude").tag("claude")
+                    Text("OpenAI / Codex").tag("openai")
+                    Text("Gemini").tag("gemini")
+                }
+                TextField(modelPlaceholder, text: $newModel)
+            }
+            Section("Telegram") {
+                SecureField("BotFather token", text: $newToken)
+                HStack {
+                    Button("Open @BotFather") {
+                        if let url = URL(string: "tg://resolve?domain=BotFather") {
                             NSWorkspace.shared.open(url)
                         }
                     }
-                    .disabled(mainBotInput.trimmingCharacters(in: .whitespaces).isEmpty)
-
-                    Divider().padding(.vertical, 4)
-
-                    Text("Once Ductor has minted the new sub-agent, paste its "
-                         + "bot username here:")
-                        .font(.footnote)
-                        .foregroundStyle(.secondary)
+                    Text("Run /newbot, copy the token.")
+                        .font(.footnote).foregroundStyle(.secondary)
                 }
+                TextField("Allowed Telegram user IDs (comma-separated)", text: $newUserIDs)
+                Text("Get your own ID by chatting with @userinfobot.")
+                    .font(.footnote).foregroundStyle(.secondary)
             }
-
-            HStack {
-                TextField("bot username (e.g. jarvis_apoorv_bot)", text: $botUsername)
-                    .textFieldStyle(.roundedBorder)
-                Button("Test") { runTest() }
-                    .disabled(botUsername.trimmingCharacters(in: .whitespaces).isEmpty
-                              || testStatus == .running)
-            }
-
-            switch testStatus {
-            case .idle:
-                EmptyView()
-            case .running:
-                ProgressView("Connecting to Telegram…").controlSize(.small)
-            case .ok(let msg):
-                Label(msg, systemImage: "checkmark.circle.fill")
-                    .foregroundStyle(.green)
-                    .font(.footnote)
-            case .failed(let msg):
-                Label(msg, systemImage: "exclamationmark.triangle.fill")
-                    .foregroundStyle(.red)
-                    .font(.footnote)
+            Section {
+                switch createState {
+                case .idle, .validating, .failed:
+                    EmptyView()
+                case .writing:
+                    HStack { ProgressView().controlSize(.small); Text("Writing agents.json…") }
+                case .waitingForSupervisor:
+                    HStack { ProgressView().controlSize(.small); Text("Waiting for AgentSupervisor to start \(newSlug)…") }
+                case .ready:
+                    Label("Agent \(newSlug) is running.", systemImage: "checkmark.circle.fill")
+                        .foregroundStyle(.green)
+                }
+                if case let .failed(msg) = createState {
+                    Label(msg, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.red)
+                        .font(.footnote)
+                }
+                if case let .validating(msg) = createState {
+                    Label(msg, systemImage: "exclamationmark.triangle.fill")
+                        .foregroundStyle(.orange)
+                        .font(.footnote)
+                }
             }
         }
     }
 
-    // MARK: - Step 3
+    private var modelPlaceholder: String {
+        switch newProvider {
+        case "claude": return "opus / sonnet / haiku"
+        case "openai": return "gpt-5.3-codex / o4-mini / …"
+        case "gemini": return "gemini-2.5-pro / …"
+        default: return ""
+        }
+    }
+
+    private func createAgentEntry(completion: @escaping (Bool) -> Void) {
+        guard let home = ductorHome else {
+            createState = .failed("Ductor home not set.")
+            completion(false); return
+        }
+        // Inline validation
+        let slug = newSlug.lowercased().trimmingCharacters(in: .whitespaces)
+        if slug.isEmpty || slug.contains(" ") || slug == "main" {
+            createState = .validating("Slug must be lowercase, no spaces, not 'main'.")
+            completion(false); return
+        }
+        if newToken.trimmingCharacters(in: .whitespaces).isEmpty {
+            createState = .validating("BotFather token is required.")
+            completion(false); return
+        }
+        let ids: [Int]
+        do {
+            ids = try parseUserIDs(newUserIDs)
+        } catch {
+            createState = .validating(error.localizedDescription)
+            completion(false); return
+        }
+        if ids.isEmpty {
+            createState = .validating("At least one Telegram user ID is required.")
+            completion(false); return
+        }
+
+        createState = .writing
+        DispatchQueue.global(qos: .userInitiated).async {
+            do {
+                try DuctorRegistry.appendTelegramAgent(
+                    home: home,
+                    name: slug,
+                    token: self.newToken.trimmingCharacters(in: .whitespaces),
+                    allowedUserIDs: ids,
+                    provider: self.newProvider,
+                    model: self.newModel.trimmingCharacters(in: .whitespaces),
+                    description: self.newDescription.trimmingCharacters(in: .whitespacesAndNewlines)
+                )
+            } catch {
+                DispatchQueue.main.async {
+                    createState = .failed("Write failed: \(error.localizedDescription)")
+                    completion(false)
+                }
+                return
+            }
+            DispatchQueue.main.async { createState = .waitingForSupervisor }
+
+            // Poll for the agent's workspace MAINMEMORY.md (up to 30 s).
+            let marker = home.appendingPathComponent("agents/\(slug)/workspace/MAINMEMORY.md")
+            let deadline = Date().addingTimeInterval(30)
+            var supervisorStarted = false
+            while Date() < deadline {
+                if FileManager.default.fileExists(atPath: marker.path) {
+                    supervisorStarted = true
+                    break
+                }
+                Thread.sleep(forTimeInterval: 0.5)
+            }
+            DispatchQueue.main.async {
+                if supervisorStarted {
+                    createState = .ready
+                } else {
+                    createState = .failed("Supervisor didn't write MAINMEMORY.md within 30s. "
+                                          + "Continuing anyway — it may still start.")
+                }
+                completion(true)
+            }
+        }
+    }
+
+    private func parseUserIDs(_ text: String) throws -> [Int] {
+        var out: [Int] = []
+        for token in text.split(separator: ",") {
+            let trimmed = token.trimmingCharacters(in: .whitespaces)
+            if trimmed.isEmpty { continue }
+            guard let n = Int(trimmed) else {
+                throw NSError(domain: "wizard", code: 1, userInfo: [
+                    NSLocalizedDescriptionKey: "User ID '\(trimmed)' is not a number."
+                ])
+            }
+            out.append(n)
+        }
+        return out
+    }
+
+    // MARK: - Step 4 — pet details
 
     private var stepDetails: some View {
         Form {
             TextField("Slug (used for paths)", text: $slug)
-                .textFieldStyle(.roundedBorder)
             TextField("Display name", text: $displayName)
-                .textFieldStyle(.roundedBorder)
             TextField("Sprite path", text: $spritePath)
-                .textFieldStyle(.roundedBorder)
             Toggle("Periodic screenshots", isOn: $screenshotsEnabled)
             HStack {
                 Text("Heartbeat every")
@@ -238,168 +514,276 @@ struct SetupWizardView: View {
         }
     }
 
+    // MARK: - Step 5 — Telegram user credentials
+
+    private var stepCreds: some View {
+        VStack(alignment: .leading, spacing: 10) {
+            TextField("Phone (e.g. +15551234567)", text: $phone)
+                .textFieldStyle(.roundedBorder)
+            HStack(spacing: 10) {
+                TextField("API id", text: $apiID)
+                    .textFieldStyle(.roundedBorder)
+                    .frame(maxWidth: 160)
+                TextField("API hash", text: $apiHash)
+                    .textFieldStyle(.roundedBorder)
+            }
+            Link("Get a free api_id / api_hash from my.telegram.org/apps →",
+                 destination: URL(string: "https://my.telegram.org/apps")!)
+                .font(.footnote)
+            if let err = credsError {
+                Text(err).font(.footnote).foregroundStyle(.red)
+            }
+        }
+    }
+
     // MARK: - Step transitions
+
+    private var canGoBack: Bool {
+        if createState == .writing || createState == .waitingForSupervisor { return false }
+        return step != firstStep
+    }
 
     private var canAdvance: Bool {
         switch step {
-        case .credentials:
+        case .locateDuctor:
+            return ductorHome != nil
+        case .pickAgent:
+            switch selection {
+            case .none: return false
+            default: return true
+            }
+        case .createAgent:
+            return createState != .writing && createState != .waitingForSupervisor
+        case .agentDetails:
+            return !slug.trimmingCharacters(in: .whitespaces).isEmpty
+                && !displayName.trimmingCharacters(in: .whitespaces).isEmpty
+        case .telegramCreds:
             return !phone.trimmingCharacters(in: .whitespaces).isEmpty
                 && Int(apiID.trimmingCharacters(in: .whitespaces)) != nil
                 && !apiHash.trimmingCharacters(in: .whitespaces).isEmpty
-        case .connect:
-            return !botUsername.trimmingCharacters(in: .whitespaces).isEmpty
-        case .details:
-            return !slug.trimmingCharacters(in: .whitespaces).isEmpty
-                && !displayName.trimmingCharacters(in: .whitespaces).isEmpty
         }
     }
 
     private func advance() {
         switch step {
-        case .credentials:
+        case .locateDuctor:
+            step = .pickAgent
+            loadRegistry()
+        case .pickAgent:
+            switch selection {
+            case .existing(let name):
+                primeDetailsFromExisting(name)
+                step = .agentDetails
+            case .createNew:
+                step = .createAgent
+            case .none:
+                return
+            }
+        case .createAgent:
+            // The "Next" button on this step kicks off the write if not yet done.
+            switch createState {
+            case .ready:
+                primeDetailsFromCreated()
+                step = .agentDetails
+            case .idle, .failed, .validating:
+                createAgentEntry { ok in
+                    if ok {
+                        primeDetailsFromCreated()
+                        step = .agentDetails
+                    }
+                }
+            default:
+                return
+            }
+        case .agentDetails:
+            let profile = makeProfile()
+            if !config.hasTelegramCredentials {
+                slug = profile.name
+                step = .telegramCreds
+                // Stash a pending profile for finishCreds() to retrieve.
+                pendingProfile = profile
+            } else {
+                onFinish(profile)
+            }
+        case .telegramCreds:
+            credsError = nil
             guard Int(apiID.trimmingCharacters(in: .whitespaces)) != nil else {
-                step1Error = "API id must be a number."
+                credsError = "API id must be numeric."
                 return
             }
             config.telegramPhone = phone.trimmingCharacters(in: .whitespaces)
             config.telegramAPIID = apiID.trimmingCharacters(in: .whitespaces)
             config.telegramAPIHash = apiHash.trimmingCharacters(in: .whitespaces)
-            step1Error = nil
-            step = .connect
-        case .connect:
-            // Pre-fill step 3 from the username.
-            let trimmed = botUsername.trimmingCharacters(in: CharacterSet(charactersIn: "@ "))
-            let derived = AgentProfile.deriveSlug(from: trimmed)
-            slug = derived
-            displayName = derived.prefix(1).uppercased() + derived.dropFirst()
-            spritePath = AgentProfile.defaultSpritePath(forName: derived)
-            step = .details
-        case .details:
-            let profile = AgentProfile(
-                name: slug,
-                displayName: displayName,
-                botUsername: botUsername.trimmingCharacters(in: CharacterSet(charactersIn: "@ ")),
-                spritePath: spritePath,
-                screenshotInterval: screenshotMinutes * 60,
-                heartbeatInterval: heartbeatMinutes * 60,
-                screenshotsEnabled: screenshotsEnabled,
-                quietHoursStart: quietStart,
-                quietHoursEnd: quietEnd
-            )
-            onFinish(profile)
-        }
-    }
-
-    private func goBack() {
-        guard let prev = Step(rawValue: step.rawValue - 1) else { return }
-        step = prev
-    }
-
-    // MARK: - Dry-run test
-
-    private func runTest() {
-        let bot = botUsername.trimmingCharacters(in: CharacterSet(charactersIn: "@ "))
-        guard !bot.isEmpty else { return }
-        testStatus = .running
-
-        let payload: [String: Any] = [
-            "agent_name": AgentProfile.deriveSlug(from: bot),
-            "bot_username": bot,
-            "api_id": apiID.trimmingCharacters(in: .whitespaces),
-            "api_hash": apiHash.trimmingCharacters(in: .whitespaces),
-            "phone": phone.trimmingCharacters(in: .whitespaces),
-        ]
-        guard let json = try? JSONSerialization.data(withJSONObject: payload, options: []),
-              let jsonStr = String(data: json, encoding: .utf8) else {
-            testStatus = .failed("Could not encode config")
-            return
-        }
-
-        bridgeRunner.run(configJSON: jsonStr) { result in
-            DispatchQueue.main.async {
-                switch result {
-                case .success:
-                    testStatus = .ok("Connected. The bot is reachable.")
-                case .needsInteractiveLogin:
-                    testStatus = .failed("Telegram session not yet authorized — "
-                                         + "run the bridge once from a terminal "
-                                         + "to enter the SMS code, then try again.")
-                case .failure(let msg):
-                    testStatus = .failed(msg)
-                }
+            if let profile = pendingProfile {
+                onFinish(profile)
+            } else {
+                onFinish(makeProfile())
             }
         }
+    }
+
+    @State private var pendingProfile: AgentProfile?
+
+    private func goBack() {
+        let order: [Step] = visibleSteps
+        guard let idx = order.firstIndex(of: step), idx > 0 else { return }
+        step = order[idx - 1]
+    }
+
+    private func primeDetailsFromExisting(_ name: String) {
+        slug = name
+        displayName = name.prefix(1).uppercased() + name.dropFirst()
+        spritePath = AgentProfile.defaultSpritePath(forName: name)
+    }
+
+    private func primeDetailsFromCreated() {
+        let s = newSlug.lowercased().trimmingCharacters(in: .whitespaces)
+        slug = s
+        displayName = s.prefix(1).uppercased() + s.dropFirst()
+        spritePath = AgentProfile.defaultSpritePath(forName: s)
+    }
+
+    private func makeProfile() -> AgentProfile {
+        // Bot username: derive from BotFather token if creating, else leave
+        // empty (the deep link is via tg://resolve?domain=<botUsername> and
+        // can be filled in later from Settings if the user knows the @handle;
+        // the bridge itself addresses the bot via the saved token on the
+        // Ductor side, not via Telethon).
+        AgentProfile(
+            name: slug,
+            displayName: displayName,
+            botUsername: "",
+            spritePath: spritePath,
+            screenshotInterval: screenshotMinutes * 60,
+            heartbeatInterval: heartbeatMinutes * 60,
+            screenshotsEnabled: screenshotsEnabled,
+            quietHoursStart: quietStart,
+            quietHoursEnd: quietEnd
+        )
     }
 }
 
-// MARK: - Bridge dry-run runner
+// MARK: - DuctorAgent + registry helpers
 
-/// Wraps the subprocess invocation for the bridge's `--dry-run` mode so
-/// the wizard view can stay focused on UI. The default runner shells out
-/// to `python3 <bundle>/Resources/bridge/bridge.py --dry-run`.
-struct BridgeDryRunRunner {
-    enum Outcome {
-        case success
-        case needsInteractiveLogin
-        case failure(String)
+struct DuctorAgent: Equatable {
+    let name: String
+    let provider: String?
+    let model: String?
+    let transport: String          // "telegram" or "matrix"
+
+    var subtitle: String {
+        let p = provider ?? "(inherited)"
+        let m = model ?? "(inherited)"
+        return "\(transport) · \(p) / \(m)"
+    }
+}
+
+/// Reads + writes Ductor's `agents.json`. Schema mirrors
+/// `tools/agent_tools/create_agent.py` in the Ductor source.
+enum DuctorRegistry {
+    enum Error: Swift.Error, LocalizedError {
+        case notFound(URL)
+        case malformedJSON
+        case duplicate(String)
+
+        var errorDescription: String? {
+            switch self {
+            case .notFound(let url): return "No agents.json at \(url.path)"
+            case .malformedJSON: return "agents.json could not be parsed."
+            case .duplicate(let name): return "An agent named '\(name)' already exists."
+            }
+        }
     }
 
-    var run: (String, @escaping (Outcome) -> Void) -> Void
+    static func agentsJSON(at home: URL) -> URL {
+        home.appendingPathComponent("agents.json")
+    }
 
-    static let systemPython = BridgeDryRunRunner { configJSON, completion in
-        DispatchQueue.global(qos: .userInitiated).async {
-            guard let bridgeURL = Bundle.main.resourceURL?
-                .appendingPathComponent("bridge")
-                .appendingPathComponent("bridge.py"),
-                  FileManager.default.fileExists(atPath: bridgeURL.path)
-            else {
-                completion(.failure("Could not find bridge.py in bundle."))
-                return
-            }
+    static func loadTelegramAgents(at home: URL) throws -> [DuctorAgent] {
+        let url = agentsJSON(at: home)
+        guard FileManager.default.fileExists(atPath: url.path) else {
+            throw Error.notFound(url)
+        }
+        let data = try Data(contentsOf: url)
+        guard let arr = try JSONSerialization.jsonObject(with: data) as? [[String: Any]] else {
+            throw Error.malformedJSON
+        }
+        return arr.compactMap { dict in
+            guard let name = dict["name"] as? String else { return nil }
+            // Telegram entries omit `transport` (default). Matrix entries
+            // set `transport: "matrix"` — those are out of scope.
+            let transport = (dict["transport"] as? String) ?? "telegram"
+            if transport != "telegram" { return nil }
+            return DuctorAgent(
+                name: name,
+                provider: dict["provider"] as? String,
+                model: dict["model"] as? String,
+                transport: transport
+            )
+        }
+    }
 
-            let proc = Process()
-            let venvPython = Bundle.main.resourceURL?
-                .appendingPathComponent("bridge/.venv/bin/python3")
-            if let v = venvPython, FileManager.default.fileExists(atPath: v.path) {
-                proc.executableURL = v
-                proc.arguments = [bridgeURL.path, "--dry-run"]
-            } else {
-                proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-                proc.arguments = ["python3", bridgeURL.path, "--dry-run"]
-            }
+    /// Append a new Telegram-transport agent to agents.json, write the
+    /// JOIN_NOTIFICATION.md, and fsync via atomic rename.
+    static func appendTelegramAgent(
+        home: URL,
+        name: String,
+        token: String,
+        allowedUserIDs: [Int],
+        provider: String?,
+        model: String?,
+        description: String?
+    ) throws {
+        let url = agentsJSON(at: home)
+        var arr: [[String: Any]] = []
+        if FileManager.default.fileExists(atPath: url.path) {
+            let data = try Data(contentsOf: url)
+            arr = (try JSONSerialization.jsonObject(with: data) as? [[String: Any]]) ?? []
+        }
+        if arr.contains(where: { ($0["name"] as? String) == name }) {
+            throw Error.duplicate(name)
+        }
 
-            var env = ProcessInfo.processInfo.environment
-            env["DUCTOR_AGENT_CONFIG_JSON"] = configJSON
-            proc.environment = env
+        var entry: [String: Any] = [
+            "name": name,
+            "telegram_token": token,
+            "allowed_user_ids": allowedUserIDs,
+        ]
+        let normalizedProvider = (provider == "codex") ? "openai" : provider
+        if let p = normalizedProvider, !p.isEmpty { entry["provider"] = p }
+        if let m = model, !m.isEmpty { entry["model"] = m }
+        arr.append(entry)
 
-            let pipe = Pipe()
-            proc.standardError = pipe
-            proc.standardOutput = pipe
-            // The bridge will try input() if not yet authorized — close stdin
-            // so it fails fast instead of hanging.
-            proc.standardInput = FileHandle.nullDevice
+        let outData = try JSONSerialization.data(
+            withJSONObject: arr,
+            options: [.prettyPrinted, .withoutEscapingSlashes]
+        )
 
-            do {
-                try proc.run()
-            } catch {
-                completion(.failure("Could not launch bridge: \(error.localizedDescription)"))
-                return
-            }
-            proc.waitUntilExit()
-            let data = pipe.fileHandleForReading.readDataToEndOfFile()
-            let log = String(data: data, encoding: .utf8) ?? ""
-            switch proc.terminationStatus {
-            case 0:
-                completion(.success)
-            case 2, 3:
-                if log.contains("send_code_request") || log.contains("not authorized") {
-                    completion(.needsInteractiveLogin)
-                } else {
-                    completion(.failure(log.isEmpty ? "Bridge returned \(proc.terminationStatus)." : log))
-                }
-            default:
-                completion(.failure(log.isEmpty ? "Bridge returned \(proc.terminationStatus)." : log))
-            }
+        // Atomic write: tmpfile → rename.
+        try FileManager.default.createDirectory(at: home,
+                                                withIntermediateDirectories: true)
+        let tmp = url.appendingPathExtension("tmp-\(UUID().uuidString)")
+        try outData.write(to: tmp, options: [.atomic])
+        // Add a trailing newline to match the Python tool's output.
+        if let fh = try? FileHandle(forWritingTo: tmp) {
+            try? fh.seekToEnd()
+            try? fh.write(contentsOf: Data("\n".utf8))
+            try? fh.close()
+        }
+        if FileManager.default.fileExists(atPath: url.path) {
+            _ = try FileManager.default.replaceItemAt(url, withItemAt: tmp)
+        } else {
+            try FileManager.default.moveItem(at: tmp, to: url)
+        }
+
+        // JOIN_NOTIFICATION.md
+        if let desc = description, !desc.isEmpty {
+            let ws = home.appendingPathComponent("agents/\(name)/workspace",
+                                                 isDirectory: true)
+            try FileManager.default.createDirectory(at: ws,
+                                                    withIntermediateDirectories: true)
+            let notif = ws.appendingPathComponent("JOIN_NOTIFICATION.md")
+            try (desc + "\n").write(to: notif, atomically: true, encoding: .utf8)
         }
     }
 }
