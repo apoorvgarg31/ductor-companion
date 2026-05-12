@@ -27,24 +27,50 @@ the tray menu.
 
 ---
 
-## Quickstart
+## Install on macOS
+
+### Prerequisites (one-time)
+
+* **macOS 13 Ventura or later**
+* **Xcode 15+** — install from the App Store, then open it once to accept the license
+* **Python 3.11+** — `brew install python@3.11`
+* **Ductor** running on the same Mac — see [github.com/PleasePrompto/ductor](https://github.com/PleasePrompto/ductor). The Companion needs `~/.ductor/agents.json` to discover agents.
+* A regular **Telegram account** and an `api_id` / `api_hash` from [my.telegram.org/apps](https://my.telegram.org/apps)
+
+### Build & run
 
 ```bash
-# 1. clone (or copy this folder onto the Mac)
-git clone <wherever-you-host-this> ductor-companion
+# 1. clone
+git clone https://github.com/apoorvgarg31/ductor-companion.git
 cd ductor-companion
 
 # 2. install the Python bridge into a venv next to the source
 ./scripts/install_bridge_deps.sh ./Jarvis/Jarvis/Resources
 
-# 3. open in Xcode (requires Xcode 15+, macOS 13+ SDK)
+# 3. open in Xcode
 open Jarvis/Jarvis.xcodeproj
-
-# 4. build & run (⌘R) — the first-run wizard kicks in.
 ```
 
-On first launch macOS will ask for **Accessibility** (needed) and
-**Screen Recording** (only if you opt in to periodic screenshots).
+In Xcode: **Signing & Capabilities** → pick your team (a free Apple ID "Personal Team" is fine). Build & run with ⌘R.
+
+On first launch macOS will prompt for **Accessibility** (needed for window-title heartbeats) and **Screen Recording** (only if you opt in to periodic screenshots). Grant both in System Settings → Privacy & Security.
+
+### One-time Telegram login
+
+The very first SMS-code login must happen in a terminal — the wizard cannot prompt for it. Run the bridge once standalone, type the code, then quit:
+
+```bash
+cd bridge
+source .venv/bin/activate
+export DUCTOR_AGENT_CONFIG_JSON='{"agent_name":"jarvis","bot_username":"<your-bot>","api_id":12345,"api_hash":"<hash>","phone":"+15551234567"}'
+python bridge.py
+# paste the SMS code (and 2FA password if applicable)
+# Ctrl-C once you see "watching @<bot>"
+```
+
+The Telethon session is then cached in macOS Keychain (service `ductor-companion`), and the in-app bridge launches silently from then on.
+
+After that, the **first-run wizard** in the app handles everything else.
 
 ---
 
