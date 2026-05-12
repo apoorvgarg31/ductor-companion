@@ -60,6 +60,7 @@ struct SetupWizardView: View {
     @State private var apiID: String = Config.shared.telegramAPIID
     @State private var apiHash: String = Config.shared.telegramAPIHash
     @State private var credsError: String?
+    @State private var showLoginSheet: Bool = false
 
     var onCancel: () -> Void = {}
     var onFinish: (AgentProfile) -> Void = { _ in }
@@ -102,6 +103,22 @@ struct SetupWizardView: View {
         .padding(20)
         .frame(width: 580, height: 580)
         .onAppear { onAppear() }
+        .sheet(isPresented: $showLoginSheet) {
+            TelegramLoginView(
+                agentSlug: slug.isEmpty ? "default" : slug,
+                phone: phone.trimmingCharacters(in: .whitespaces),
+                apiID: apiID.trimmingCharacters(in: .whitespaces),
+                apiHash: apiHash.trimmingCharacters(in: .whitespaces),
+                onComplete: {
+                    showLoginSheet = false
+                    let profile = pendingProfile ?? makeProfile()
+                    onFinish(profile)
+                },
+                onCancel: {
+                    showLoginSheet = false
+                }
+            )
+        }
     }
 
     private var header: some View {
@@ -614,11 +631,10 @@ struct SetupWizardView: View {
             config.telegramPhone = phone.trimmingCharacters(in: .whitespaces)
             config.telegramAPIID = apiID.trimmingCharacters(in: .whitespaces)
             config.telegramAPIHash = apiHash.trimmingCharacters(in: .whitespaces)
-            if let profile = pendingProfile {
-                onFinish(profile)
-            } else {
-                onFinish(makeProfile())
-            }
+            // Hand off to the in-app login sheet — it spawns the bridge
+            // in --login-only mode, handles the SMS-code + 2FA prompts
+            // over the websocket, and only then calls onFinish.
+            showLoginSheet = true
         }
     }
 

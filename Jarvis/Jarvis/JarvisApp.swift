@@ -1,6 +1,56 @@
 import SwiftUI
 import AppKit
 
+/// Resolves the bridge entry point (PyInstaller-bundled Mach-O,
+/// dev-time venv, or fall-back system python3) and builds a `Process`
+/// ready to launch. Shared between the long-lived runtime bridge and
+/// the wizard's `--login-only` invocation.
+struct BridgeLauncher {
+    let resources: URL?
+
+    init(resources: URL? = Bundle.main.resourceURL) {
+        self.resources = resources
+    }
+
+    var bundledBinary: URL? {
+        guard let r = resources else { return nil }
+        let url = r.appendingPathComponent("bridge_bundled/bridge_app/bridge")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    var venvPython: URL? {
+        guard let r = resources else { return nil }
+        let url = r.appendingPathComponent("bridge/.venv/bin/python3")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    var bridgeScript: URL? {
+        guard let r = resources else { return nil }
+        let url = r.appendingPathComponent("bridge/bridge.py")
+        return FileManager.default.fileExists(atPath: url.path) ? url : nil
+    }
+
+    /// Build a Process pre-configured with the right executable + args.
+    /// Returns nil when no bridge entry point can be found inside the
+    /// app bundle.
+    func makeProcess(extraArgs: [String] = []) -> Process? {
+        let proc = Process()
+        if let bundled = bundledBinary {
+            proc.executableURL = bundled
+            proc.arguments = extraArgs
+        } else if let venv = venvPython, let script = bridgeScript {
+            proc.executableURL = venv
+            proc.arguments = [script.path] + extraArgs
+        } else if let script = bridgeScript {
+            proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
+            proc.arguments = ["python3", script.path] + extraArgs
+        } else {
+            return nil
+        }
+        return proc
+    }
+}
+
 @main
 struct DuctorCompanionApp: App {
     @NSApplicationDelegateAdaptor(AppDelegate.self) var appDelegate
@@ -199,36 +249,11 @@ final class DuctorAppController: NSObject {
     // MARK: - Bridge subprocess
 
     private func launchBridgeProcess() -> Int {
-        let resources = Bundle.main.resourceURL
-        let bridgeFolder = resources?.appendingPathComponent("bridge")
-        let bridgeScript = bridgeFolder?.appendingPathComponent("bridge.py")
-        let venvPython = bridgeFolder?.appendingPathComponent(".venv/bin/python3")
-        let bundledBridge = resources?
-            .appendingPathComponent("bridge_bundled/bridge_app/bridge")
         let portFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("ductor-companion.port")
         try? FileManager.default.removeItem(at: portFile)
 
-        let proc = Process()
-        if let bundled = bundledBridge,
-           FileManager.default.fileExists(atPath: bundled.path) {
-            // Shipping path: self-contained PyInstaller binary inside
-            // Resources/bridge_bundled/. No system Python required.
-            proc.executableURL = bundled
-            proc.arguments = []
-        } else if let script = bridgeScript,
-                  FileManager.default.fileExists(atPath: script.path),
-                  let venv = venvPython,
-                  FileManager.default.fileExists(atPath: venv.path) {
-            // Dev path: venv installed by scripts/install_bridge_deps.sh
-            proc.executableURL = venv
-            proc.arguments = [script.path]
-        } else if let script = bridgeScript,
-                  FileManager.default.fileExists(atPath: script.path) {
-            // Last resort: hope a system python3 is on PATH.
-            proc.executableURL = URL(fileURLWithPath: "/usr/bin/env")
-            proc.arguments = ["python3", script.path]
-        } else {
+        guard let proc = BridgeLauncher().makeProcess() else {
             NSLog("[ductor] no bridge launcher found "
                   + "(neither bridge_bundled/ nor bridge/bridge.py)")
             return 0

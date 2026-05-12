@@ -14,6 +14,17 @@ Outbound from websocket clients -> Telegram bot chat:
     {"kind": "heartbeat", "data": {...}}     # serialized to "[heartbeat] {...}"
     {"kind": "screenshot", "png_base64": "...", "caption": "..."}
 
+Login-flow messages (in-app wizard, see TelegramLoginView.swift):
+    bridge -> swift   {"kind": "needs_sms_code", "phone": "+15..."}
+                      {"kind": "needs_2fa_password"}
+                      {"kind": "login_complete"}
+                      {"kind": "login_failed", "reason": "..."}
+    swift -> bridge   {"kind": "sms_code", "value": "12345"}
+                      {"kind": "2fa_password", "value": "..."}
+
+If stdin is a TTY (standalone CLI run), the bridge falls back to
+prompting via input() so the dev workflow still works without Swift.
+
 Configuration
 -------------
 Preferred (set by the Swift host on launch):
@@ -34,9 +45,14 @@ their own cached login state.
 
 CLI flags
 ---------
-    --dry-run    Authenticate + resolve the configured bot username,
-                 then exit 0 on success / non-zero on failure. Used by
-                 the in-app setup wizard's "Test" button.
+    --dry-run       Authenticate + resolve the configured bot username,
+                    then exit 0 on success / non-zero on failure. Used by
+                    the in-app setup wizard's "Test" button.
+    --login-only    Bring up the websocket, perform Telegram auth
+                    (prompting Swift for the SMS code / 2FA over the
+                    websocket), cache the session, then exit. Used by
+                    the first-run wizard before the main app launches
+                    the bridge for real.
 """
 
 from __future__ import annotations
@@ -52,7 +68,7 @@ import sys
 import time
 from io import BytesIO
 from pathlib import Path
-from typing import Any, Optional, Set
+from typing import Any, Awaitable, Callable, Optional, Set
 
 try:
     import keyring  # type: ignore
@@ -61,6 +77,7 @@ except Exception:  # pragma: no cover - keyring optional
 
 import websockets
 from telethon import TelegramClient, events
+from telethon.errors import SessionPasswordNeededError
 from telethon.sessions import StringSession
 
 KEYRING_SERVICE = "ductor-companion"
@@ -126,46 +143,6 @@ def save_session(agent_name: str, session: str) -> None:
         pass
 
 
-async def _connect_authorized(config: dict[str, str]) -> Optional[TelegramClient]:
-    """Connect + authenticate. Returns a logged-in TelegramClient or None."""
-    try:
-        api_id = int(config["api_id"])
-    except (TypeError, ValueError):
-        print("[bridge] api_id missing or non-numeric", file=sys.stderr)
-        return None
-    api_hash = config["api_hash"]
-    phone = config["phone"]
-    agent_name = config["agent_name"]
-    if not api_hash:
-        print("[bridge] api_hash missing", file=sys.stderr)
-        return None
-
-    session = StringSession(load_session(agent_name))
-    client = TelegramClient(session, api_id, api_hash)
-    await client.connect()
-
-    if not await client.is_user_authorized():
-        if not phone:
-            print("[bridge] phone missing — cannot start interactive login",
-                  file=sys.stderr)
-            return None
-        await client.send_code_request(phone)
-        code = input(f"Enter the Telegram code sent to {phone}: ").strip()
-        try:
-            await client.sign_in(phone=phone, code=code)
-        except Exception as exc:
-            from telethon.errors import SessionPasswordNeededError
-            if isinstance(exc, SessionPasswordNeededError):
-                pwd = input("Enter your 2FA password: ")
-                await client.sign_in(password=pwd)
-            else:
-                raise
-        save_session(agent_name, client.session.save())
-        print("[bridge] logged in; session cached.", file=sys.stderr)
-
-    return client
-
-
 # --------------------------------------------------------------------------- #
 # Local websocket fan-out
 # --------------------------------------------------------------------------- #
@@ -191,16 +168,121 @@ class Hub:
 
 
 # --------------------------------------------------------------------------- #
+# Login coordinator — pumps SMS-code / 2FA prompts over the websocket
+# instead of stdin so the in-app wizard can present a sheet.
+# --------------------------------------------------------------------------- #
+
+class LoginCoordinator:
+    """Bridges Telethon's blocking auth prompts to async websocket messages.
+
+    `request_code` / `request_password` broadcast a `needs_*` message and
+    await a future that the websocket handler resolves when Swift replies.
+    """
+
+    def __init__(self, hub: Hub) -> None:
+        self.hub = hub
+        self._code_future: Optional[asyncio.Future] = None
+        self._pwd_future: Optional[asyncio.Future] = None
+
+    async def request_code(self, phone: str) -> str:
+        loop = asyncio.get_event_loop()
+        self._code_future = loop.create_future()
+        await self.hub.broadcast({"kind": "needs_sms_code", "phone": phone})
+        return await self._code_future
+
+    async def request_password(self) -> str:
+        loop = asyncio.get_event_loop()
+        self._pwd_future = loop.create_future()
+        await self.hub.broadcast({"kind": "needs_2fa_password"})
+        return await self._pwd_future
+
+    def deliver_code(self, value: str) -> None:
+        if self._code_future is not None and not self._code_future.done():
+            self._code_future.set_result(value)
+
+    def deliver_password(self, value: str) -> None:
+        if self._pwd_future is not None and not self._pwd_future.done():
+            self._pwd_future.set_result(value)
+
+
+def _stdin_is_tty() -> bool:
+    try:
+        return bool(sys.stdin and sys.stdin.isatty())
+    except Exception:
+        return False
+
+
+# --------------------------------------------------------------------------- #
+# Telegram auth
+# --------------------------------------------------------------------------- #
+
+async def _connect_authorized(
+    config: dict[str, str],
+    coordinator: Optional[LoginCoordinator] = None,
+) -> Optional[TelegramClient]:
+    """Connect + authenticate. Returns a logged-in TelegramClient or None.
+
+    When `coordinator` is supplied AND stdin is not a TTY, SMS-code and
+    2FA-password prompts are pushed over the websocket. Otherwise they
+    fall back to stdin (legacy / dev path).
+    """
+    try:
+        api_id = int(config["api_id"])
+    except (TypeError, ValueError):
+        print("[bridge] api_id missing or non-numeric", file=sys.stderr)
+        return None
+    api_hash = config["api_hash"]
+    phone = config["phone"]
+    agent_name = config["agent_name"]
+    if not api_hash:
+        print("[bridge] api_hash missing", file=sys.stderr)
+        return None
+
+    session = StringSession(load_session(agent_name))
+    client = TelegramClient(session, api_id, api_hash)
+    await client.connect()
+
+    if not await client.is_user_authorized():
+        if not phone:
+            print("[bridge] phone missing — cannot start interactive login",
+                  file=sys.stderr)
+            return None
+        await client.send_code_request(phone)
+        use_ws = coordinator is not None and not _stdin_is_tty()
+        if use_ws:
+            code = (await coordinator.request_code(phone)).strip()
+        else:
+            code = input(f"Enter the Telegram code sent to {phone}: ").strip()
+        try:
+            await client.sign_in(phone=phone, code=code)
+        except SessionPasswordNeededError:
+            if use_ws:
+                pwd = await coordinator.request_password()
+            else:
+                pwd = input("Enter your 2FA password: ")
+            await client.sign_in(password=pwd)
+        save_session(agent_name, client.session.save())
+        print("[bridge] logged in; session cached.", file=sys.stderr)
+
+    return client
+
+
+# --------------------------------------------------------------------------- #
 # Telegram <-> hub plumbing
 # --------------------------------------------------------------------------- #
 
-async def telegram_main(hub: Hub, inbound: asyncio.Queue, config: dict[str, str]) -> None:
+async def telegram_main(
+    hub: Hub,
+    inbound: asyncio.Queue,
+    config: dict[str, str],
+    coordinator: Optional[LoginCoordinator] = None,
+) -> None:
     bot_username = config["bot_username"]
     if not bot_username:
         print("[bridge] bot_username missing — bridge idle.", file=sys.stderr)
         return
 
-    client = await _connect_authorized(config)
+    client = await _connect_authorized(config, coordinator=coordinator)
     if client is None:
         return
 
@@ -263,7 +345,12 @@ async def telegram_main(hub: Hub, inbound: asyncio.Queue, config: dict[str, str]
 # Websocket server
 # --------------------------------------------------------------------------- #
 
-async def ws_main(hub: Hub, inbound: asyncio.Queue, port_holder: list[int]) -> None:
+async def ws_main(
+    hub: Hub,
+    inbound: asyncio.Queue,
+    port_holder: list[int],
+    coordinator: Optional[LoginCoordinator] = None,
+) -> None:
     async def handler(ws: websockets.WebSocketServerProtocol) -> None:
         await hub.register(ws)
         try:
@@ -271,6 +358,15 @@ async def ws_main(hub: Hub, inbound: asyncio.Queue, port_holder: list[int]) -> N
                 try:
                     payload = json.loads(raw)
                 except json.JSONDecodeError:
+                    continue
+                kind = payload.get("kind")
+                # Login replies short-circuit straight to the coordinator;
+                # they never appear in the outbound queue.
+                if coordinator is not None and kind == "sms_code":
+                    coordinator.deliver_code(str(payload.get("value", "")))
+                    continue
+                if coordinator is not None and kind == "2fa_password":
+                    coordinator.deliver_password(str(payload.get("value", "")))
                     continue
                 await inbound.put(payload)
         except websockets.ConnectionClosed:
@@ -322,6 +418,68 @@ async def dry_run(config: dict[str, str]) -> int:
 
 
 # --------------------------------------------------------------------------- #
+# Login-only mode — wizard handshake
+# --------------------------------------------------------------------------- #
+
+async def login_only(config: dict[str, str]) -> int:
+    """Bring up the websocket, authenticate (prompting Swift over WS),
+    save the session, and exit.
+
+    Used by the first-run wizard before the main app launches the
+    long-lived bridge. Does NOT require bot_username to be set.
+    """
+    hub = Hub()
+    inbound: asyncio.Queue = asyncio.Queue()
+    coordinator = LoginCoordinator(hub)
+    port_holder: list[int] = []
+
+    ws_task = asyncio.create_task(ws_main(hub, inbound, port_holder, coordinator))
+
+    # Wait for the wizard to connect before kicking off Telegram auth.
+    deadline = time.time() + 60
+    while time.time() < deadline and not hub.clients:
+        await asyncio.sleep(0.1)
+    if not hub.clients and not _stdin_is_tty():
+        print("[bridge] no client connected within 60s; aborting login-only",
+              file=sys.stderr)
+        ws_task.cancel()
+        with contextlib.suppress(Exception):
+            await ws_task
+        return 5
+
+    client: Optional[TelegramClient] = None
+    try:
+        client = await _connect_authorized(config, coordinator=coordinator)
+    except Exception as exc:
+        print(f"[bridge] login-only auth crashed: {exc}", file=sys.stderr)
+        await hub.broadcast({"kind": "login_failed", "reason": str(exc)})
+        await asyncio.sleep(0.5)
+        ws_task.cancel()
+        with contextlib.suppress(Exception):
+            await ws_task
+        return 3
+
+    if client is None:
+        await hub.broadcast({"kind": "login_failed", "reason": "bad config"})
+        await asyncio.sleep(0.5)
+        ws_task.cancel()
+        with contextlib.suppress(Exception):
+            await ws_task
+        return 3
+
+    await hub.broadcast({"kind": "login_complete"})
+    # Give the wizard a moment to receive the success message before we
+    # tear everything down.
+    await asyncio.sleep(0.5)
+    with contextlib.suppress(Exception):
+        await client.disconnect()
+    ws_task.cancel()
+    with contextlib.suppress(Exception):
+        await ws_task
+    return 0
+
+
+# --------------------------------------------------------------------------- #
 # Entry point
 # --------------------------------------------------------------------------- #
 
@@ -330,13 +488,16 @@ async def amain(args: argparse.Namespace) -> int:
 
     if args.dry_run:
         return await dry_run(config)
+    if args.login_only:
+        return await login_only(config)
 
     hub = Hub()
     inbound: asyncio.Queue = asyncio.Queue()
+    coordinator = LoginCoordinator(hub)
     port_holder: list[int] = []
 
-    ws_task = asyncio.create_task(ws_main(hub, inbound, port_holder))
-    tg_task = asyncio.create_task(telegram_main(hub, inbound, config))
+    ws_task = asyncio.create_task(ws_main(hub, inbound, port_holder, coordinator))
+    tg_task = asyncio.create_task(telegram_main(hub, inbound, config, coordinator))
 
     done, pending = await asyncio.wait(
         {ws_task, tg_task},
@@ -353,6 +514,9 @@ def main() -> None:
     parser = argparse.ArgumentParser()
     parser.add_argument("--dry-run", action="store_true",
                         help="Authenticate + resolve bot, then exit.")
+    parser.add_argument("--login-only", action="store_true",
+                        help="Authenticate (prompting via websocket), cache "
+                             "the session, then exit. Used by the wizard.")
     args = parser.parse_args()
     try:
         rc = asyncio.run(amain(args))
