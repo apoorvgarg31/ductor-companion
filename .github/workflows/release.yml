@@ -1,0 +1,133 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Tag name to label the build (e.g. v0.1.0-test)'
+        required: false
+        default: 'manual'
+
+permissions:
+  contents: write
+
+jobs:
+  build-dmg:
+    runs-on: macos-14
+    timeout-minutes: 30
+
+    env:
+      APP_NAME: "Ductor Companion"
+      TAG_NAME: ${{ github.ref_name }}
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install Python build deps
+        run: |
+          python -m pip install --upgrade pip
+          # Keep these pinned in lock-step with bridge/requirements.txt;
+          # the standalone build does not consume requirements.txt directly.
+          python -m pip install \
+            pyinstaller==6.6.0 \
+            telethon==1.36.0 \
+            websockets==12.0 \
+            keyring==25.2.1 \
+            Pillow==10.4.0
+
+      - name: Build PyInstaller bundle
+        run: bash bridge/build_standalone.sh
+
+      - name: Stage bundled bridge into app Resources
+        run: |
+          rm -rf Jarvis/Jarvis/Resources/bridge_bundled/bridge_app
+          mkdir -p Jarvis/Jarvis/Resources/bridge_bundled
+          cp -R bridge/dist/bridge_app Jarvis/Jarvis/Resources/bridge_bundled/
+          chmod +x Jarvis/Jarvis/Resources/bridge_bundled/bridge_app/bridge
+          ls -la Jarvis/Jarvis/Resources/bridge_bundled/bridge_app | head
+
+      - name: Build Ductor Companion.app (ad-hoc signed)
+        run: |
+          xcodebuild \
+            -project Jarvis/Jarvis.xcodeproj \
+            -scheme Jarvis \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
+
+      - name: Locate built .app
+        id: locate
+        run: |
+          APP_PATH=$(find build -type d \( -name 'Ductor Companion.app' -o -name 'Jarvis.app' \) | head -1)
+          if [[ -z "$APP_PATH" ]]; then
+            echo "::error::could not locate built .app under build/"
+            find build -name '*.app' -maxdepth 6
+            exit 1
+          fi
+          echo "Found app at: $APP_PATH"
+          # Rename to Ductor Companion.app if the scheme still emits Jarvis.app
+          DIR=$(dirname "$APP_PATH")
+          if [[ "$(basename "$APP_PATH")" == "Jarvis.app" ]]; then
+            mv "$APP_PATH" "$DIR/Ductor Companion.app"
+            APP_PATH="$DIR/Ductor Companion.app"
+          fi
+          echo "app_path=$APP_PATH" >> "$GITHUB_OUTPUT"
+
+      - name: Re-sign embedded bridge binary (ad-hoc)
+        run: |
+          # The PyInstaller bundle inside Resources/bridge_bundled/ is
+          # not signed by xcodebuild's Copy Resources phase; sign the
+          # whole .app deeply so macOS will let it launch on first run.
+          codesign --force --deep --sign - "${{ steps.locate.outputs.app_path }}"
+          codesign --verify --deep --strict --verbose=2 "${{ steps.locate.outputs.app_path }}" || true
+
+      - name: Install create-dmg
+        run: brew install create-dmg
+
+      - name: Build .dmg
+        run: |
+          OUTPUT="Ductor-Companion-${TAG_NAME}.dmg"
+          STAGING=$(mktemp -d)
+          cp -R "${{ steps.locate.outputs.app_path }}" "$STAGING/"
+          create-dmg \
+            --volname "Ductor Companion ${TAG_NAME}" \
+            --window-size 540 380 \
+            --icon-size 96 \
+            --icon "Ductor Companion.app" 140 180 \
+            --app-drop-link 400 180 \
+            --no-internet-enable \
+            "$OUTPUT" \
+            "$STAGING" || true
+          # create-dmg sometimes returns non-zero on a successful build
+          # when AppleScript can't talk to Finder in the runner. Verify
+          # the .dmg exists regardless.
+          ls -la "$OUTPUT"
+          echo "DMG_PATH=$OUTPUT" >> "$GITHUB_ENV"
+
+      - name: Upload .dmg to GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: ${{ env.DMG_PATH }}
+          draft: false
+          prerelease: false
+          fail_on_unmatched_files: true
+
+      - name: Upload .dmg as workflow artifact
+        if: "!startsWith(github.ref, 'refs/tags/')"
+        uses: actions/upload-artifact@v4
+        with:
+          name: dmg-${{ github.run_number }}
+          path: ${{ env.DMG_PATH }}

@@ -1,0 +1,30 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+jobs:
+  xcodebuild:
+    runs-on: macos-14
+    timeout-minutes: 15
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: xcodebuild (Release, ad-hoc signed)
+        run: |
+          # The PyInstaller step is skipped on CI to save runner minutes —
+          # this job only catches Swift compile errors. The release
+          # workflow exercises the full DMG path.
+          xcodebuild \
+            -project Jarvis/Jarvis.xcodeproj \
+            -scheme Jarvis \
+            -configuration Release \
+            -derivedDataPath build \
+            CODE_SIGN_IDENTITY=- \
+            CODE_SIGNING_REQUIRED=NO \
+            CODE_SIGNING_ALLOWED=NO \
+            build
