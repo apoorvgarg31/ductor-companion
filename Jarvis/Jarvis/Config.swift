@@ -54,6 +54,7 @@ final class Config: ObservableObject {
     }
 
     private init() {
+        let defaults = UserDefaults.standard
         defaults.register(defaults: [
             Key.ductorHomePath: "",
             Key.bridgePort: 0,
@@ -61,12 +62,13 @@ final class Config: ObservableObject {
             Key.sensorsPaused: false,
         ])
 
-        let loaded: [AgentProfile] = {
-            guard let data = defaults.data(forKey: Key.agents),
-                  let arr = try? JSONDecoder().decode([AgentProfile].self, from: data)
-            else { return [] }
-            return arr
-        }()
+        let loaded: [AgentProfile]
+        if let data = defaults.data(forKey: Key.agents),
+           let arr = try? JSONDecoder().decode([AgentProfile].self, from: data) {
+            loaded = arr
+        } else {
+            loaded = []
+        }
         self.agents = loaded
 
         if let raw = defaults.string(forKey: Key.selectedAgentID),
