@@ -127,7 +127,10 @@ When you click **Create & continue**, the Companion:
 Defaults derived from the slug:
 
 * Display name: capitalized slug.
-* Sprite path: `~/.codex/pets/<slug>/`.
+* Sprite: the bundled **Zen Robot** atlas ships inside the DMG, so the pet
+  works out of the box. Leave the *Custom sprite path* field empty to use
+  it — or point at a `~/.codex/pets/<slug>/` directory you generated with
+  the **hatch-pet** skill in Codex CLI for a custom look.
 * Heartbeat every 2 min, screenshots off, screenshot interval 5 min,
   quiet hours 22:00 – 08:00.
 
@@ -231,10 +234,15 @@ screenshots arrive as photos with the same caption format.
 ## Troubleshooting
 
 * **"Ductor Companion can't be opened because Apple cannot check it for malicious software."** — expected for unsigned apps. Right-click the app → **Open** → **Open** anyway; or run `xattr -d com.apple.quarantine "/Applications/Ductor Companion.app"`.
-* **No sprite, blue hexagon** → run the **hatch-pet** skill from OpenAI's
+* **Want a different sprite than the bundled Zen Robot** → run the
+  **hatch-pet** skill from OpenAI's
   [skills repo](https://github.com/openai/skills) in Codex CLI to
-  generate `~/.codex/pets/<agent-slug>/spritesheet.webp` + `pet.json`.
-  The companion picks it up on next agent switch or app restart.
+  generate `~/.codex/pets/<agent-slug>/spritesheet.webp` + `pet.json`, then
+  paste that directory's path into Settings → Agents → *Custom sprite
+  path*. Clearing the field reverts to the bundled default.
+* **Blue hexagon placeholder** → the app's bundled `Resources/pets/zen-robot/`
+  folder is missing (only possible with a corrupt install). Re-download the
+  DMG.
 * **Pet doesn't appear** → tray menu → "Show Pet". If the saved
   position is off-screen, run
   `defaults delete com.apoorvgarg.ductor-companion`.
@@ -302,10 +310,11 @@ screenshots arrive as photos with the same caption format.
 
 ## Acknowledgements
 
-* The desktop sprite comes from the **hatch-pet** skill in
-  [openai/skills](https://github.com/openai/skills). Run it from Codex
-  CLI to produce `~/.codex/pets/<slug>/`; the companion picks it up
-  automatically.
+* The bundled **Zen Robot** sprite atlas was produced by the **hatch-pet**
+  skill in [openai/skills](https://github.com/openai/skills) and ships
+  inside the DMG. Run the skill yourself from Codex CLI to mint your own
+  `~/.codex/pets/<slug>/` and paste the directory path into Settings →
+  Agents → *Custom sprite path* to swap the look.
 * This is the Mac face for the Ductor agent system (an internal
   multi-agent orchestrator).
 
@@ -417,7 +426,9 @@ ductor-companion/
 │       └── Resources/
 │           ├── Assets.xcassets/
 │           ├── bridge/               ← bundled Python source + dev venv
-│           └── bridge_bundled/       ← PyInstaller output (release only)
+│           ├── bridge_bundled/       ← PyInstaller output (release only)
+│           └── pets/                 ← bundled hatch-pet atlases
+│               └── zen-robot/        ← default sprite (spritesheet.webp + pet.json + thumbnail.png)
 ├── bridge/                           ← standalone bridge source
 │   ├── bridge.py
 │   ├── requirements.txt
