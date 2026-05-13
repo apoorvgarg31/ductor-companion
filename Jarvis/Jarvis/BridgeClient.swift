@@ -68,7 +68,15 @@ struct AnyCodable: Codable {
 final class BridgeClient: NSObject {
     typealias MessageHandler = (BridgeMessage) -> Void
 
+    enum State: String {
+        case idle           // never started, or stop() called
+        case connecting     // task resumed, handshake pending
+        case connected      // didOpenWithProtocol fired — wire is live
+        case disconnected   // closed; reconnect pending
+    }
+
     private(set) var port: Int = 0
+    private(set) var state: State = .idle
     var agentSlug: String = Trace.unknownAgent
     var onMessage: MessageHandler?
     var onStateChange: ((Bool) -> Void)?
@@ -78,6 +86,11 @@ final class BridgeClient: NSObject {
     private var reconnectDelay: TimeInterval = 1.0
     private let queue = DispatchQueue(label: "jarvis.bridge.client")
     private var stopped = true
+    /// Outbound messages that arrived before the websocket handshake
+    /// completed. Flushed in `didOpenWithProtocol`. Bounded so a stuck
+    /// connection can't unboundedly grow memory.
+    private var pendingOutbound: [BridgeMessage] = []
+    private static let pendingCap = 32
 
     override init() {
         super.init()
@@ -92,6 +105,19 @@ final class BridgeClient: NSObject {
         self.stopped = false
         Trace.log(Trace.bridge, agent: agentSlug,
                   "client.start(port=\(port))")
+        if port <= 0 {
+            // Used to silently fall through into `connect()` which
+            // early-returned without surfacing the failure — sends then
+            // disappeared into a nil `task`. Make the dead state explicit
+            // so the user sees "disconnected" in the tray and the trace.
+            Trace.log(Trace.bridge, .error, agent: agentSlug,
+                      "start refused — port=\(port). Bridge subprocess "
+                      + "did not announce a port; outbound traffic would "
+                      + "be silently dropped.")
+            state = .disconnected
+            DispatchQueue.main.async { [weak self] in self?.onStateChange?(false) }
+            return
+        }
         connect()
     }
 
@@ -100,6 +126,8 @@ final class BridgeClient: NSObject {
         stopped = true
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
+        state = .idle
+        pendingOutbound.removeAll()
     }
 
     // MARK: - Sending
@@ -125,12 +153,36 @@ final class BridgeClient: NSObject {
     }
 
     private func send(_ message: BridgeMessage) {
-        let taskState: String = (task == nil) ? "no-task" : "task-resumed"
         Trace.log(Trace.bridge, agent: agentSlug,
-                  "send kind=\(message.kind) ws=\(taskState)")
+                  "send kind=\(message.kind) state=\(state.rawValue)")
+        switch state {
+        case .connected:
+            transmit(message)
+        case .connecting:
+            // Handshake hasn't completed yet. URLSession would buffer the
+            // send and either flush on success or drop it on failure with
+            // no visible error. Hold the payload here instead and flush
+            // explicitly from `didOpenWithProtocol`.
+            if pendingOutbound.count >= BridgeClient.pendingCap {
+                Trace.log(Trace.bridge, .error, agent: agentSlug,
+                          "pending buffer full (\(BridgeClient.pendingCap)) — "
+                          + "dropping oldest kind=\(pendingOutbound.first?.kind ?? "?")")
+                pendingOutbound.removeFirst()
+            }
+            pendingOutbound.append(message)
+            Trace.log(Trace.bridge, agent: agentSlug,
+                      "queued kind=\(message.kind) pending=\(pendingOutbound.count)")
+        case .idle, .disconnected:
+            Trace.log(Trace.bridge, .error, agent: agentSlug,
+                      "DROP kind=\(message.kind) — state=\(state.rawValue)")
+        }
+    }
+
+    private func transmit(_ message: BridgeMessage) {
         guard let task = task else {
             Trace.log(Trace.bridge, .error, agent: agentSlug,
-                      "DROP kind=\(message.kind) — websocket task is nil")
+                      "transmit kind=\(message.kind) — task is nil despite "
+                      + "state=\(state.rawValue) (logic error)")
             return
         }
         do {
@@ -157,19 +209,29 @@ final class BridgeClient: NSObject {
     // MARK: - Connection lifecycle
 
     private func connect() {
-        guard !stopped, port > 0 else {
+        guard !stopped else {
+            Trace.log(Trace.bridge, agent: agentSlug,
+                      "connect() skipped — stopped")
+            return
+        }
+        guard port > 0 else {
             Trace.log(Trace.bridge, .error, agent: agentSlug,
-                      "connect() skipped — stopped=\(stopped) port=\(port)")
+                      "connect() skipped — port=\(port)")
             return
         }
         guard let url = URL(string: "ws://127.0.0.1:\(port)/") else { return }
 
         Trace.log(Trace.bridge, agent: agentSlug,
                   "connect ws://127.0.0.1:\(port)/")
+        state = .connecting
         let t = session.webSocketTask(with: url)
         self.task = t
         t.resume()
-        DispatchQueue.main.async { [weak self] in self?.onStateChange?(true) }
+        // NOTE: onStateChange(true) used to fire here, before the
+        // handshake actually completed. That meant the tray icon said
+        // "connected" while sends were silently buffered into a TCP
+        // connection that hadn't been negotiated yet. State updates now
+        // come from `didOpenWithProtocol` instead.
         listen()
     }
 
@@ -210,16 +272,27 @@ final class BridgeClient: NSObject {
     }
 
     private func scheduleReconnect() {
+        let wasConnected = (state == .connected)
+        state = .disconnected
         DispatchQueue.main.async { [weak self] in self?.onStateChange?(false) }
         guard !stopped else { return }
         let delay = reconnectDelay
         reconnectDelay = min(reconnectDelay * 2, 30)
         Trace.log(Trace.bridge, agent: agentSlug,
-                  "reconnect scheduled in \(delay)s")
+                  "reconnect scheduled in \(delay)s wasConnected=\(wasConnected)")
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.task = nil
             self?.connect()
         }
+    }
+
+    private func flushPending() {
+        guard !pendingOutbound.isEmpty else { return }
+        let drained = pendingOutbound
+        pendingOutbound.removeAll()
+        Trace.log(Trace.bridge, agent: agentSlug,
+                  "flushing \(drained.count) queued message(s)")
+        for msg in drained { transmit(msg) }
     }
 }
 
@@ -228,8 +301,11 @@ extension BridgeClient: URLSessionDelegate, URLSessionWebSocketDelegate {
                     webSocketTask: URLSessionWebSocketTask,
                     didOpenWithProtocol proto: String?) {
         reconnectDelay = 1.0
+        state = .connected
         Trace.log(Trace.bridge, agent: agentSlug,
                   "didOpenWithProtocol — handshake complete, port=\(port)")
+        DispatchQueue.main.async { [weak self] in self?.onStateChange?(true) }
+        flushPending()
     }
     func urlSession(_ session: URLSession,
                     webSocketTask: URLSessionWebSocketTask,
