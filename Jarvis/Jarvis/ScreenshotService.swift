@@ -25,7 +25,7 @@ final class ScreenshotService {
     func start() {
         stop()
         guard enabled, !Config.shared.sensorsPaused else { return }
-        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.tick()
         }
         RunLoop.main.add(t, forMode: .common)

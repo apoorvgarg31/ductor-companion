@@ -11,20 +11,33 @@ final class HeartbeatService {
     private var timer: Timer?
     private var interval: TimeInterval = 120
     private var isQuiet: () -> Bool = { false }
+    private var configured: Bool = false
 
     func configure(interval: TimeInterval, isQuiet: @escaping () -> Bool) {
         self.interval = max(30, interval)
         self.isQuiet = isQuiet
+        self.configured = true
+        // If the timer is already running with a stale interval, restart it.
+        if timer != nil { start() }
     }
 
     func start() {
         stop()
+        guard configured else {
+            NSLog("[ductor] heartbeat.start() called before configure(); skipping")
+            return
+        }
         guard !Config.shared.sensorsPaused else { return }
-        let t = Timer.scheduledTimer(withTimeInterval: interval, repeats: true) { [weak self] _ in
+        // Use the non-scheduling Timer initializer + explicit RunLoop.main /
+        // .common modes so the timer fires even while menus / popovers are
+        // open, and is guaranteed to live on the main runloop regardless of
+        // which thread `start()` was invoked from.
+        let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.tick()
         }
         RunLoop.main.add(t, forMode: .common)
         self.timer = t
+        NSLog("[ductor] heartbeat timer scheduled every \(interval)s")
     }
 
     func stop() {
