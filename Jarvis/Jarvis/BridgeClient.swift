@@ -1,4 +1,5 @@
 import Foundation
+import os.log
 
 /// Wire payload for messages flowing between Jarvis.app and the
 /// Python Telethon bridge. We keep the schema tiny and string-keyed
@@ -68,6 +69,7 @@ final class BridgeClient: NSObject {
     typealias MessageHandler = (BridgeMessage) -> Void
 
     private(set) var port: Int = 0
+    var agentSlug: String = Trace.unknownAgent
     var onMessage: MessageHandler?
     var onStateChange: ((Bool) -> Void)?
 
@@ -88,10 +90,13 @@ final class BridgeClient: NSObject {
     func start(port: Int) {
         self.port = port
         self.stopped = false
+        Trace.log(Trace.bridge, agent: agentSlug,
+                  "client.start(port=\(port))")
         connect()
     }
 
     func stop() {
+        Trace.log(Trace.bridge, agent: agentSlug, "client.stop()")
         stopped = true
         task?.cancel(with: .goingAway, reason: nil)
         task = nil
@@ -120,26 +125,47 @@ final class BridgeClient: NSObject {
     }
 
     private func send(_ message: BridgeMessage) {
-        guard let task = task else { return }
+        let taskState: String = (task == nil) ? "no-task" : "task-resumed"
+        Trace.log(Trace.bridge, agent: agentSlug,
+                  "send kind=\(message.kind) ws=\(taskState)")
+        guard let task = task else {
+            Trace.log(Trace.bridge, .error, agent: agentSlug,
+                      "DROP kind=\(message.kind) — websocket task is nil")
+            return
+        }
         do {
             let data = try JSONEncoder().encode(message)
             guard let str = String(data: data, encoding: .utf8) else { return }
+            let slug = agentSlug
+            let kind = message.kind
             task.send(.string(str)) { error in
                 if let error = error {
-                    NSLog("[jarvis] bridge send failed: \(error.localizedDescription)")
+                    Trace.log(Trace.bridge, .error, agent: slug,
+                              "send completion error kind=\(kind): "
+                              + "\(error.localizedDescription)")
+                } else {
+                    Trace.log(Trace.bridge, agent: slug,
+                              "send completion ok kind=\(kind) bytes=\(str.utf8.count)")
                 }
             }
         } catch {
-            NSLog("[jarvis] bridge encode failed: \(error.localizedDescription)")
+            Trace.log(Trace.bridge, .error, agent: agentSlug,
+                      "encode failed kind=\(message.kind): \(error.localizedDescription)")
         }
     }
 
     // MARK: - Connection lifecycle
 
     private func connect() {
-        guard !stopped, port > 0 else { return }
+        guard !stopped, port > 0 else {
+            Trace.log(Trace.bridge, .error, agent: agentSlug,
+                      "connect() skipped — stopped=\(stopped) port=\(port)")
+            return
+        }
         guard let url = URL(string: "ws://127.0.0.1:\(port)/") else { return }
 
+        Trace.log(Trace.bridge, agent: agentSlug,
+                  "connect ws://127.0.0.1:\(port)/")
         let t = session.webSocketTask(with: url)
         self.task = t
         t.resume()
@@ -155,7 +181,8 @@ final class BridgeClient: NSObject {
                 self.handle(message: message)
                 self.listen()
             case .failure(let error):
-                NSLog("[jarvis] bridge recv failed: \(error.localizedDescription)")
+                Trace.log(Trace.bridge, .error, agent: self.agentSlug,
+                          "recv failed: \(error.localizedDescription)")
                 self.scheduleReconnect()
             }
         }
@@ -171,11 +198,14 @@ final class BridgeClient: NSObject {
         guard let data = payload else { return }
         do {
             let decoded = try JSONDecoder().decode(BridgeMessage.self, from: data)
+            Trace.log(Trace.bridge, agent: agentSlug,
+                      "recv kind=\(decoded.kind)")
             DispatchQueue.main.async { [weak self] in
                 self?.onMessage?(decoded)
             }
         } catch {
-            NSLog("[jarvis] bridge decode failed: \(error.localizedDescription)")
+            Trace.log(Trace.bridge, .error, agent: agentSlug,
+                      "decode failed: \(error.localizedDescription)")
         }
     }
 
@@ -184,6 +214,8 @@ final class BridgeClient: NSObject {
         guard !stopped else { return }
         let delay = reconnectDelay
         reconnectDelay = min(reconnectDelay * 2, 30)
+        Trace.log(Trace.bridge, agent: agentSlug,
+                  "reconnect scheduled in \(delay)s")
         queue.asyncAfter(deadline: .now() + delay) { [weak self] in
             self?.task = nil
             self?.connect()
@@ -196,11 +228,15 @@ extension BridgeClient: URLSessionDelegate, URLSessionWebSocketDelegate {
                     webSocketTask: URLSessionWebSocketTask,
                     didOpenWithProtocol proto: String?) {
         reconnectDelay = 1.0
+        Trace.log(Trace.bridge, agent: agentSlug,
+                  "didOpenWithProtocol — handshake complete, port=\(port)")
     }
     func urlSession(_ session: URLSession,
                     webSocketTask: URLSessionWebSocketTask,
                     didCloseWith closeCode: URLSessionWebSocketTask.CloseCode,
                     reason: Data?) {
+        Trace.log(Trace.bridge, agent: agentSlug,
+                  "didCloseWith code=\(closeCode.rawValue)")
         scheduleReconnect()
     }
 }

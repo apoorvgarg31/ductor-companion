@@ -2,6 +2,7 @@ import Foundation
 import AppKit
 import ApplicationServices
 import CoreGraphics
+import os.log
 
 /// Collects a lightweight activity snapshot (frontmost app, window title,
 /// idle seconds, optional terminal cwd) and sends it through the bridge.
@@ -12,35 +13,57 @@ final class HeartbeatService {
     private var interval: TimeInterval = 120
     private var isQuiet: () -> Bool = { false }
     private var configured: Bool = false
+    private var agentSlug: String = Trace.unknownAgent
 
-    func configure(interval: TimeInterval, isQuiet: @escaping () -> Bool) {
-        self.interval = max(30, interval)
+    func configure(interval: TimeInterval,
+                   agent: String,
+                   isQuiet: @escaping () -> Bool) {
+        let clamped = max(30, interval)
+        let timerAlreadyArmed = (timer != nil)
+        self.interval = clamped
         self.isQuiet = isQuiet
         self.configured = true
+        self.agentSlug = agent
+        Trace.log(Trace.heartbeat,
+                  agent: agent,
+                  "configure interval=\(clamped)s armed=\(timerAlreadyArmed)")
         // If the timer is already running with a stale interval, restart it.
-        if timer != nil { start() }
+        if timerAlreadyArmed { start() }
     }
 
     func start() {
         stop()
         guard configured else {
-            NSLog("[ductor] heartbeat.start() called before configure(); skipping")
+            Trace.log(Trace.heartbeat, .error,
+                      agent: agentSlug,
+                      "start() before configure() — skipping")
             return
         }
-        guard !Config.shared.sensorsPaused else { return }
+        if Config.shared.sensorsPaused {
+            Trace.log(Trace.heartbeat,
+                      agent: agentSlug,
+                      "start() skipped — sensors paused")
+            return
+        }
         // Use the non-scheduling Timer initializer + explicit RunLoop.main /
         // .common modes so the timer fires even while menus / popovers are
         // open, and is guaranteed to live on the main runloop regardless of
         // which thread `start()` was invoked from.
+        let firstFire = interval
         let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.tick()
         }
         RunLoop.main.add(t, forMode: .common)
         self.timer = t
-        NSLog("[ductor] heartbeat timer scheduled every \(interval)s")
+        Trace.log(Trace.heartbeat,
+                  agent: agentSlug,
+                  "started — first fire in \(Int(firstFire))s, repeats=\(Int(interval))s")
     }
 
     func stop() {
+        if timer != nil {
+            Trace.log(Trace.heartbeat, agent: agentSlug, "stop()")
+        }
         timer?.invalidate()
         timer = nil
     }
@@ -61,8 +84,37 @@ final class HeartbeatService {
     }
 
     private func tick() {
-        guard !Config.shared.sensorsPaused else { return }
-        onHeartbeat?(snapshot())
+        let quiet = isQuiet()
+        Trace.log(Trace.heartbeat,
+                  agent: agentSlug,
+                  "tick quiet=\(quiet) paused=\(Config.shared.sensorsPaused)")
+        if Config.shared.sensorsPaused {
+            Trace.log(Trace.heartbeat,
+                      agent: agentSlug,
+                      "suppressed — sensors paused")
+            return
+        }
+        if quiet {
+            // Heartbeats themselves aren't gated by quiet hours in the
+            // existing contract (the `quiet_hour` flag is just included so
+            // the agent can act on it); log so the path is explicit.
+            Trace.log(Trace.heartbeat,
+                      agent: agentSlug,
+                      "tick during quiet hours — sending with quiet_hour=true")
+        }
+        let payload = snapshot()
+        let app = payload["frontmost_app"] as? String ?? "?"
+        let idle = payload["idle_seconds"] as? Double ?? 0
+        Trace.log(Trace.heartbeat,
+                  agent: agentSlug,
+                  "send frontmost=\(app) idle=\(Int(idle))s")
+        guard let cb = onHeartbeat else {
+            Trace.log(Trace.heartbeat, .error,
+                      agent: agentSlug,
+                      "onHeartbeat handler is nil — payload dropped")
+            return
+        }
+        cb(payload)
     }
 
     private func currentIdleSeconds() -> Double {

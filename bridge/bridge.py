@@ -190,22 +190,31 @@ async def telegram_main(
     config: dict[str, str],
     coordinator: Optional[LoginCoordinator] = None,
 ) -> None:
+    agent = config.get("agent_name") or "(no-agent)"
     bot_username = config["bot_username"]
     if not bot_username:
-        print("[bridge] bot_username missing — bridge idle.", file=sys.stderr)
+        print(f"[trace agent={agent}] bot_username missing — telegram_main "
+              "exiting; outbound queue will have no consumer. Set the bot "
+              "username in Settings → Agents.", file=sys.stderr, flush=True)
         return
 
     client = await _connect_authorized(config, coordinator=coordinator)
     if client is None:
+        print(f"[trace agent={agent}] _connect_authorized returned None — "
+              "telegram_main exiting; check api_id/api_hash/phone.",
+              file=sys.stderr, flush=True)
         return
 
     try:
         target = await client.get_entity(bot_username)
     except Exception as exc:
-        print(f"[bridge] cannot resolve bot @{bot_username}: {exc}", file=sys.stderr)
+        print(f"[trace agent={agent}] cannot resolve bot @{bot_username}: "
+              f"{exc!r}", file=sys.stderr, flush=True)
         return
 
     target_id = target.id
+    print(f"[trace agent={agent}] resolved @{bot_username} -> target_id="
+          f"{target_id}", file=sys.stderr, flush=True)
 
     @client.on(events.NewMessage(from_users=target_id))
     async def on_message(event):  # type: ignore[no-redef]
@@ -224,18 +233,23 @@ async def telegram_main(
     async def outbound_loop() -> None:
         while True:
             item = await inbound.get()
+            kind = item.get("kind")
             try:
-                kind = item.get("kind")
                 if kind == "user_text":
                     text = item.get("text") or ""
                     if text:
                         await client.send_message(target_id, text)
+                        print(f"[trace agent={agent}] outbound user_text ok "
+                              f"len={len(text)}", file=sys.stderr, flush=True)
                 elif kind == "heartbeat":
                     payload = item.get("data") or {}
                     await client.send_message(
                         target_id,
                         "[heartbeat] " + json.dumps(payload, separators=(",", ":")),
                     )
+                    print(f"[trace agent={agent}] outbound heartbeat ok "
+                          f"keys={sorted(payload.keys())}",
+                          file=sys.stderr, flush=True)
                 elif kind == "screenshot":
                     b64 = item.get("png_base64") or ""
                     caption = item.get("caption") or "[screenshot]"
@@ -245,12 +259,17 @@ async def telegram_main(
                     bio = BytesIO(raw)
                     bio.name = "screenshot.png"
                     await client.send_file(target_id, file=bio, caption=caption)
+                    print(f"[trace agent={agent}] outbound screenshot ok "
+                          f"bytes={len(raw)}", file=sys.stderr, flush=True)
                 else:
-                    print(f"[bridge] ignoring unknown kind={kind}", file=sys.stderr)
+                    print(f"[trace agent={agent}] ignoring unknown kind={kind}",
+                          file=sys.stderr, flush=True)
             except Exception as exc:
-                print(f"[bridge] outbound failed: {exc}", file=sys.stderr)
+                print(f"[trace agent={agent}] outbound {kind} FAILED: "
+                      f"{exc!r}", file=sys.stderr, flush=True)
 
-    print(f"[bridge] watching @{bot_username} ({target_id})", file=sys.stderr)
+    print(f"[trace agent={agent}] watching @{bot_username} "
+          f"({target_id}); outbound_loop running", file=sys.stderr, flush=True)
     await asyncio.gather(client.run_until_disconnected(), outbound_loop())
 
 

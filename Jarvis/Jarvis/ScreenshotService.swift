@@ -1,6 +1,7 @@
 import Foundation
 import AppKit
 import CoreGraphics
+import os.log
 
 /// Periodic full-display capture using CGWindowList (works back to macOS 10).
 ///
@@ -15,24 +16,48 @@ final class ScreenshotService {
     private var enabled: Bool = false
     private var interval: TimeInterval = 300
     private var isQuiet: () -> Bool = { false }
+    private var agentSlug: String = Trace.unknownAgent
 
-    func configure(enabled: Bool, interval: TimeInterval, isQuiet: @escaping () -> Bool) {
+    func configure(enabled: Bool,
+                   interval: TimeInterval,
+                   agent: String,
+                   isQuiet: @escaping () -> Bool) {
+        let clamped = max(30, interval)
+        let timerAlreadyArmed = (timer != nil)
         self.enabled = enabled
-        self.interval = max(30, interval)
+        self.interval = clamped
         self.isQuiet = isQuiet
+        self.agentSlug = agent
+        Trace.log(Trace.screenshot,
+                  agent: agent,
+                  "configure enabled=\(enabled) interval=\(clamped)s armed=\(timerAlreadyArmed)")
+        if timerAlreadyArmed { start() }
     }
 
     func start() {
         stop()
-        guard enabled, !Config.shared.sensorsPaused else { return }
+        guard enabled else {
+            Trace.log(Trace.screenshot, agent: agentSlug, "start() skipped — disabled")
+            return
+        }
+        if Config.shared.sensorsPaused {
+            Trace.log(Trace.screenshot, agent: agentSlug, "start() skipped — sensors paused")
+            return
+        }
         let t = Timer(timeInterval: interval, repeats: true) { [weak self] _ in
             self?.tick()
         }
         RunLoop.main.add(t, forMode: .common)
         self.timer = t
+        Trace.log(Trace.screenshot,
+                  agent: agentSlug,
+                  "started — first fire in \(Int(interval))s, repeats=\(Int(interval))s")
     }
 
     func stop() {
+        if timer != nil {
+            Trace.log(Trace.screenshot, agent: agentSlug, "stop()")
+        }
         timer?.invalidate()
         timer = nil
     }
@@ -40,11 +65,40 @@ final class ScreenshotService {
     func captureOnce() { tick() }
 
     private func tick() {
-        if Config.shared.sensorsPaused || isQuiet() || !enabled { return }
-        guard let png = captureMainDisplayPNG() else { return }
+        let quiet = isQuiet()
+        Trace.log(Trace.screenshot,
+                  agent: agentSlug,
+                  "tick enabled=\(enabled) quiet=\(quiet) paused=\(Config.shared.sensorsPaused)")
+        if Config.shared.sensorsPaused {
+            Trace.log(Trace.screenshot, agent: agentSlug, "suppressed — sensors paused")
+            return
+        }
+        if quiet {
+            Trace.log(Trace.screenshot, agent: agentSlug, "suppressed — quiet hours")
+            return
+        }
+        if !enabled {
+            Trace.log(Trace.screenshot, agent: agentSlug, "suppressed — disabled")
+            return
+        }
+        guard let png = captureMainDisplayPNG() else {
+            Trace.log(Trace.screenshot, .error,
+                      agent: agentSlug,
+                      "captureMainDisplayPNG returned nil — Screen Recording permission?")
+            return
+        }
         let b64 = png.base64EncodedString()
         let caption = captionProvider?() ?? "[screenshot]"
-        onCapture?(b64, caption)
+        Trace.log(Trace.screenshot,
+                  agent: agentSlug,
+                  "send bytes=\(png.count) caption='\(caption)'")
+        guard let cb = onCapture else {
+            Trace.log(Trace.screenshot, .error,
+                      agent: agentSlug,
+                      "onCapture handler is nil — payload dropped")
+            return
+        }
+        cb(b64, caption)
     }
 
     private func captureMainDisplayPNG() -> Data? {

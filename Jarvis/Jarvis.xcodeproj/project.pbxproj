@@ -26,6 +26,7 @@
 		AA0000010000000000000013 /* bridge_bundled in Resources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000013 /* bridge_bundled */; };
 		AA0000010000000000000014 /* TelegramLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000014 /* TelegramLoginView.swift */; };
 		AA0000010000000000000015 /* pets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000015 /* pets */; };
+		AA0000010000000000000020 /* Tracing.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000020 /* Tracing.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -50,6 +51,7 @@
 		BB0000010000000000000013 /* bridge_bundled */ = {isa = PBXFileReference; lastKnownFileType = folder; path = bridge_bundled; sourceTree = "<group>"; };
 		BB0000010000000000000014 /* TelegramLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramLoginView.swift; sourceTree = "<group>"; };
 		BB0000010000000000000015 /* pets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = pets; sourceTree = "<group>"; };
+		BB0000010000000000000020 /* Tracing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tracing.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -89,6 +91,7 @@
 				BB0000010000000000000011 /* Keychain.swift */,
 				BB0000010000000000000012 /* SetupWizardView.swift */,
 				BB0000010000000000000014 /* TelegramLoginView.swift */,
+				BB0000010000000000000020 /* Tracing.swift */,
 				DD0000010000000000000004 /* Resources */,
 				BB000001000000000000000E /* Info.plist */,
 			);
@@ -201,6 +204,7 @@
 				AA0000010000000000000011 /* Keychain.swift in Sources */,
 				AA0000010000000000000012 /* SetupWizardView.swift in Sources */,
 				AA0000010000000000000014 /* TelegramLoginView.swift in Sources */,
+				AA0000010000000000000020 /* Tracing.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};

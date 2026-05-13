@@ -1,6 +1,7 @@
 import SwiftUI
 import AppKit
 import UserNotifications
+import os.log
 
 /// Resolves the bridge entry point (bundled Mach-O > dev venv > system
 /// python3) and builds a Process ready to launch.
@@ -148,6 +149,10 @@ final class DuctorAppController: NSObject {
     private let screenshots = ScreenshotService()
     private let heartbeat = HeartbeatService()
     private var bridgeProcess: Process?
+    private var bridgeStderrPipe: Pipe?
+    private var bridgeStdoutPipe: Pipe?
+    private var bridgeStderrBuffer = Data()
+    private var bridgeStdoutBuffer = Data()
     private var settingsWindow: NSWindow?
     private(set) var bridgeStatus: String = "starting…"
 
@@ -193,6 +198,10 @@ final class DuctorAppController: NSObject {
         screenshots.stop()
         heartbeat.stop()
         bridge.stop()
+        bridgeStderrPipe?.fileHandleForReading.readabilityHandler = nil
+        bridgeStdoutPipe?.fileHandleForReading.readabilityHandler = nil
+        bridgeStderrPipe = nil
+        bridgeStdoutPipe = nil
         bridgeProcess?.terminate()
         bridgeProcess = nil
     }
@@ -235,13 +244,16 @@ final class DuctorAppController: NSObject {
 
     private func wireSensors() {
         guard let agent = Config.shared.selectedAgent else { return }
+        bridge.agentSlug = agent.name
         screenshots.configure(
             enabled: agent.screenshotsEnabled,
             interval: agent.screenshotInterval,
+            agent: agent.name,
             isQuiet: { agent.isQuietHour }
         )
         heartbeat.configure(
             interval: agent.heartbeatInterval,
+            agent: agent.name,
             isQuiet: { agent.isQuietHour }
         )
         heartbeat.onHeartbeat = { [weak self] data in
@@ -263,13 +275,15 @@ final class DuctorAppController: NSObject {
     // MARK: - Bridge subprocess
 
     private func launchBridgeProcess() -> Int {
+        let agent = Config.shared.selectedAgent?.name ?? Trace.unknownAgent
         let portFile = FileManager.default.temporaryDirectory
             .appendingPathComponent("ductor-companion.port")
         try? FileManager.default.removeItem(at: portFile)
 
         guard let proc = BridgeLauncher().makeProcess() else {
-            NSLog("[ductor] no bridge launcher found "
-                  + "(neither bridge_bundled/ nor bridge/bridge.py)")
+            Trace.log(Trace.bridge, .error, agent: agent,
+                      "no bridge launcher found "
+                      + "(neither bridge_bundled/ nor bridge/bridge.py)")
             return 0
         }
 
@@ -278,13 +292,22 @@ final class DuctorAppController: NSObject {
             env["DUCTOR_AGENT_CONFIG_JSON"] = blob
         }
         env["JARVIS_PORT_FILE"] = portFile.path
+        // Tell Python to flush stdout/stderr immediately so the lines we
+        // pipe to os_log show up in Console.app in real time.
+        env["PYTHONUNBUFFERED"] = "1"
         proc.environment = env
+
+        attachOutputPipes(to: proc, agent: agent)
 
         do {
             try proc.run()
             self.bridgeProcess = proc
+            Trace.log(Trace.bridge, agent: agent,
+                      "subprocess launched pid=\(proc.processIdentifier) "
+                      + "exe=\(proc.executableURL?.lastPathComponent ?? "?")")
         } catch {
-            NSLog("[ductor] failed to launch bridge: \(error)")
+            Trace.log(Trace.bridge, .error, agent: agent,
+                      "failed to launch bridge: \(error.localizedDescription)")
             return 0
         }
 
@@ -294,12 +317,72 @@ final class DuctorAppController: NSObject {
                let str = String(data: data, encoding: .utf8),
                let port = Int(str.trimmingCharacters(in: .whitespacesAndNewlines)),
                port > 0 {
+                Trace.log(Trace.bridge, agent: agent,
+                          "subprocess announced port=\(port)")
                 return port
             }
             Thread.sleep(forTimeInterval: 0.1)
         }
-        NSLog("[ductor] bridge did not announce a port within 8s")
+        Trace.log(Trace.bridge, .error, agent: agent,
+                  "bridge did not announce a port within 8s — outbound will be dropped")
         return 0
+    }
+
+    /// Pipe the bridge subprocess's stdout/stderr to the `bridge-py`
+    /// os_log category so Python-side errors show up in Console.app under
+    /// the same subsystem as the Swift traces. Previously these streams
+    /// inherited the launching process's tty, which means they were
+    /// silently swallowed for a `.app` launched from Finder.
+    private func attachOutputPipes(to proc: Process, agent: String) {
+        let errPipe = Pipe()
+        let outPipe = Pipe()
+        proc.standardError = errPipe
+        proc.standardOutput = outPipe
+        bridgeStderrPipe = errPipe
+        bridgeStdoutPipe = outPipe
+        bridgeStderrBuffer.removeAll()
+        bridgeStdoutBuffer.removeAll()
+
+        errPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            self?.consumeBridgeOutput(chunk, isStderr: true, agent: agent)
+        }
+        outPipe.fileHandleForReading.readabilityHandler = { [weak self] handle in
+            let chunk = handle.availableData
+            guard !chunk.isEmpty else { return }
+            self?.consumeBridgeOutput(chunk, isStderr: false, agent: agent)
+        }
+    }
+
+    private func consumeBridgeOutput(_ chunk: Data, isStderr: Bool, agent: String) {
+        // Split on newlines without losing partial trailing lines between
+        // reads — handlers fire whenever the pipe has data, often mid-line.
+        DispatchQueue.main.async { [weak self] in
+            guard let self else { return }
+            if isStderr {
+                self.bridgeStderrBuffer.append(chunk)
+                self.flushLines(buffer: &self.bridgeStderrBuffer,
+                                stream: "stderr", agent: agent)
+            } else {
+                self.bridgeStdoutBuffer.append(chunk)
+                self.flushLines(buffer: &self.bridgeStdoutBuffer,
+                                stream: "stdout", agent: agent)
+            }
+        }
+    }
+
+    private func flushLines(buffer: inout Data, stream: String, agent: String) {
+        while let nl = buffer.firstIndex(of: 0x0A) {
+            let lineData = buffer[buffer.startIndex..<nl]
+            buffer.removeSubrange(buffer.startIndex...nl)
+            let line = String(data: lineData, encoding: .utf8)?
+                .trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if line.isEmpty { continue }
+            let level: OSLogType = stream == "stderr" ? .info : .info
+            Trace.log(Trace.bridgePy, level, agent: agent,
+                      "\(stream): \(line)")
+        }
     }
 
     // MARK: - Actions
