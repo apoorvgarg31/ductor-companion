@@ -65,6 +65,9 @@ struct DuctorCompanionApp: App {
 final class AppDelegate: NSObject, NSApplicationDelegate {
     private(set) var controller: DuctorAppController?
     private var wizardWindow: NSWindow?
+    private var hotKey: GlobalHotKey?
+    private var quickChat: QuickChatWindowController?
+    private var shortcutObserver: NSObjectProtocol?
 
     func applicationDidFinishLaunching(_ notification: Notification) {
         NSApp.setActivationPolicy(.accessory)
@@ -75,6 +78,20 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
         }
         self.controller = c
 
+        // The quick-chat input is available regardless of wizard state —
+        // it just no-ops until a bridge connection exists. Re-register
+        // whenever the user changes the shortcut from Settings.
+        let qc = QuickChatWindowController { [weak self] text in
+            self?.controller?.sendQuickChat(text)
+        }
+        self.quickChat = qc
+        installHotKey()
+        shortcutObserver = NotificationCenter.default.addObserver(
+            forName: .quickChatShortcutChanged,
+            object: nil,
+            queue: .main
+        ) { [weak self] _ in self?.installHotKey() }
+
         if Config.shared.selectedAgent == nil || !Config.shared.hasTelegramCredentials {
             presentWizard(firstRun: true)
         } else {
@@ -84,6 +101,25 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
 
     func applicationWillTerminate(_ notification: Notification) {
         controller?.stop()
+        if let token = shortcutObserver {
+            NotificationCenter.default.removeObserver(token)
+        }
+        hotKey = nil
+    }
+
+    private func installHotKey() {
+        let shortcut = Config.shared.quickChatShortcut
+        let carbonMods = GlobalHotKey.carbonModifiers(from: shortcut.modifiers)
+        // Releasing the old binding before creating the new one — Carbon
+        // refuses to register two hotkeys with overlapping signatures
+        // until the previous EventHotKeyRef has been unregistered.
+        self.hotKey = nil
+        self.hotKey = GlobalHotKey(
+            keyCode: UInt16(shortcut.keyCode),
+            carbonModifiers: carbonMods
+        ) { [weak self] in
+            self?.quickChat?.toggle()
+        }
     }
 
     // MARK: - Wizard
@@ -391,6 +427,13 @@ final class DuctorAppController: NSObject {
         if let url = Config.shared.telegramDeepLink() {
             NSWorkspace.shared.open(url)
         }
+    }
+
+    /// Send a one-shot message from the global quick-chat window. Replies
+    /// arrive via the regular Telegram → bridge → speech-bubble path, so
+    /// there's no separate response UI to wire up.
+    func sendQuickChat(_ text: String) {
+        bridge.sendText(text)
     }
 
     func toggleVisibility() {

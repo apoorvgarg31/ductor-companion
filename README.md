@@ -166,6 +166,11 @@ detected, credentials are already cached).
 * **Bubble appears** when the agent sends a message. Up to 5 lines
   render inline; for longer messages you'll see "📩 tap for full thread".
 * **Drag the pet** anywhere — its position is remembered per-display.
+* **⌘⇧J** anywhere on macOS pops a small floating input — type your
+  question, hit Return, the reply lands in the pet's speech bubble like
+  any other agent message. Escape (or 30 s of idleness) dismisses
+  without sending. The shortcut is reconfigurable in
+  Settings → General → *Quick chat shortcut*.
 * **Menu bar icon** → show/hide pet, pause sensors, switch agent, add
   agent, open settings, quit.
 * **Quiet hours** silence sensor traffic; explicit messages still surface.
@@ -246,10 +251,22 @@ screenshots arrive as photos with the same caption format.
 * **Pet doesn't appear** → tray menu → "Show Pet". If the saved
   position is off-screen, run
   `defaults delete com.apoorvgarg.ductor-companion`.
-* **Bridge stuck "disconnected"** → Console.app, filter `[ductor]`
-  or `[bridge]`. Common causes: missing API id/hash, session expired
+* **Bridge stuck "disconnected" / heartbeats missing** → all
+  Companion + bridge subprocess output is funnelled to a single
+  unified-logging subsystem. From Terminal:
+
+  ```bash
+  log show --predicate 'subsystem == "com.apoorvgarg.ductor-companion"' \
+      --info --last 5m
+  ```
+
+  Categories you can filter on: `heartbeat`, `screenshot`, `bridge`,
+  `bridge-py` (subprocess stdout/stderr — Telethon errors land here),
+  and `hotkey`. Every line carries the active agent slug. Common
+  causes: missing API id/hash, session expired
   (`keyring delete ductor-companion <agent-slug>` then re-run the
-  wizard), bot username typo.
+  wizard), bot username typo, or the bridge subprocess taking longer
+  than 8 s to come up (the trace will say `start refused — port=0`).
 * **Empty window titles** → grant Accessibility in System Settings →
   Privacy & Security → Accessibility.
 * **Screenshots never send** → Settings → enable per-agent. If still

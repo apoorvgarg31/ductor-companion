@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import Carbon.HIToolbox
 
 /// Tabbed settings panel.
 ///
@@ -13,6 +14,9 @@ struct SettingsView: View {
 
     var body: some View {
         TabView {
+            GeneralTab()
+                .tabItem { Label("General", systemImage: "gearshape") }
+
             AgentsTab(controller: controller)
                 .tabItem { Label("Agents", systemImage: "person.crop.circle") }
 
@@ -21,6 +25,78 @@ struct SettingsView: View {
         }
         .padding(12)
         .frame(width: 560, height: 600)
+    }
+}
+
+// MARK: - General tab
+
+private struct GeneralTab: View {
+    @State private var shortcut: QuickChatShortcut = Config.shared.quickChatShortcut
+    @State private var recording: Bool = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: 14) {
+            Text("Quick chat").font(.headline)
+            HStack(alignment: .center, spacing: 12) {
+                Text("Shortcut")
+                ShortcutRecorder(shortcut: $shortcut, recording: $recording) { new in
+                    Config.shared.quickChatShortcut = new
+                }
+                Button("Reset to ⌘⇧J") {
+                    shortcut = .default
+                    Config.shared.quickChatShortcut = .default
+                }
+                .buttonStyle(.borderless)
+            }
+            Text("Press the shortcut anywhere on macOS to talk to your pet.")
+                .font(.footnote)
+                .foregroundStyle(.secondary)
+            Spacer()
+        }
+        .padding(8)
+    }
+}
+
+/// Click → "Type shortcut…". Press any chord with at least one non-shift
+/// modifier (cmd/opt/ctrl) to capture; bare alphanumerics would clash
+/// with typing. Esc aborts the capture.
+private struct ShortcutRecorder: View {
+    @Binding var shortcut: QuickChatShortcut
+    @Binding var recording: Bool
+    let onChange: (QuickChatShortcut) -> Void
+    @State private var monitor: Any?
+
+    var body: some View {
+        Button(recording ? "Type shortcut…" : shortcut.displayString) {
+            startRecording()
+        }
+        .controlSize(.large)
+        .frame(minWidth: 140)
+        .onDisappear { stopRecording() }
+    }
+
+    private func startRecording() {
+        guard !recording else { return }
+        recording = true
+        monitor = NSEvent.addLocalMonitorForEvents(matching: [.keyDown]) { ev in
+            if Int(ev.keyCode) == kVK_Escape {
+                stopRecording(); return nil
+            }
+            let mods = ev.modifierFlags.intersection(.deviceIndependentFlagsMask)
+            if mods.contains(.command) || mods.contains(.option) || mods.contains(.control) {
+                let s = QuickChatShortcut(keyCode: Int(ev.keyCode),
+                                          modifiers: mods.rawValue)
+                shortcut = s
+                onChange(s)
+                stopRecording()
+            }
+            return nil
+        }
+    }
+
+    private func stopRecording() {
+        if let m = monitor { NSEvent.removeMonitor(m); monitor = nil }
+        recording = false
     }
 }
 

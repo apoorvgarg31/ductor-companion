@@ -27,6 +27,9 @@
 		AA0000010000000000000014 /* TelegramLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000014 /* TelegramLoginView.swift */; };
 		AA0000010000000000000015 /* pets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000015 /* pets */; };
 		AA0000010000000000000020 /* Tracing.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000020 /* Tracing.swift */; };
+		AA0000010000000000000021 /* GlobalHotKey.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000021 /* GlobalHotKey.swift */; };
+		AA0000010000000000000022 /* QuickChatWindow.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000022 /* QuickChatWindow.swift */; };
+		AA0000010000000000000023 /* QuickChatShortcut.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000023 /* QuickChatShortcut.swift */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -52,6 +55,9 @@
 		BB0000010000000000000014 /* TelegramLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramLoginView.swift; sourceTree = "<group>"; };
 		BB0000010000000000000015 /* pets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = pets; sourceTree = "<group>"; };
 		BB0000010000000000000020 /* Tracing.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = Tracing.swift; sourceTree = "<group>"; };
+		BB0000010000000000000021 /* GlobalHotKey.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = GlobalHotKey.swift; sourceTree = "<group>"; };
+		BB0000010000000000000022 /* QuickChatWindow.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickChatWindow.swift; sourceTree = "<group>"; };
+		BB0000010000000000000023 /* QuickChatShortcut.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = QuickChatShortcut.swift; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -92,6 +98,9 @@
 				BB0000010000000000000012 /* SetupWizardView.swift */,
 				BB0000010000000000000014 /* TelegramLoginView.swift */,
 				BB0000010000000000000020 /* Tracing.swift */,
+				BB0000010000000000000021 /* GlobalHotKey.swift */,
+				BB0000010000000000000022 /* QuickChatWindow.swift */,
+				BB0000010000000000000023 /* QuickChatShortcut.swift */,
 				DD0000010000000000000004 /* Resources */,
 				BB000001000000000000000E /* Info.plist */,
 			);
@@ -205,6 +214,9 @@
 				AA0000010000000000000012 /* SetupWizardView.swift in Sources */,
 				AA0000010000000000000014 /* TelegramLoginView.swift in Sources */,
 				AA0000010000000000000020 /* Tracing.swift in Sources */,
+				AA0000010000000000000021 /* GlobalHotKey.swift in Sources */,
+				AA0000010000000000000022 /* QuickChatWindow.swift in Sources */,
+				AA0000010000000000000023 /* QuickChatShortcut.swift in Sources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -285,7 +297,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.apoorvgarg.ductor-companion";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -310,7 +322,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.2.0;
+				MARKETING_VERSION = 0.3.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.apoorvgarg.ductor-companion";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
