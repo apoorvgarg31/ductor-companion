@@ -1,0 +1,44 @@
+{
+  "id": "zen-robot",
+  "displayName": "Zen Robot",
+  "description": "Small zen AI robot with a calm posture, pastel tones, and a gentle single-antenna expression.",
+  "spritesheetPath": "spritesheet.webp",
+  "animations": [
+    {
+      "name": "idle",
+      "frames": 6
+    },
+    {
+      "name": "running-right",
+      "frames": 8
+    },
+    {
+      "name": "running-left",
+      "frames": 8
+    },
+    {
+      "name": "waving",
+      "frames": 4
+    },
+    {
+      "name": "jumping",
+      "frames": 5
+    },
+    {
+      "name": "failed",
+      "frames": 8
+    },
+    {
+      "name": "waiting",
+      "frames": 6
+    },
+    {
+      "name": "running",
+      "frames": 6
+    },
+    {
+      "name": "review",
+      "frames": 6
+    }
+  ]
+}

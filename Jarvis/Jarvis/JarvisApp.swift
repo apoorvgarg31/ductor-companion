@@ -135,9 +135,9 @@ final class DuctorAppController: NSObject {
     var requestWizard: ((Bool) -> Void)?
 
     override init() {
-        let initialPath = Config.shared.selectedAgent?.spritePath
-            ?? AgentProfile.defaultSpritePath(forName: "jarvis")
-        let atlas = SpriteAtlas.load(spritePath: initialPath)
+        let atlas = SpriteAtlas.load(
+            customSpritePath: Config.shared.selectedAgent?.spritePath
+        )
         self.atlas = atlas
 
         var openTelegramRef: () -> Void = {}
@@ -184,7 +184,7 @@ final class DuctorAppController: NSObject {
         guard let agent = Config.shared.selectedAgent else { return }
 
         // Reload the atlas + pet window for the new sprite path.
-        let newAtlas = SpriteAtlas.load(spritePath: agent.spritePath)
+        let newAtlas = SpriteAtlas.load(customSpritePath: agent.spritePath)
         self.atlas = newAtlas
 
         var openTelegramRef: () -> Void = {}

@@ -69,12 +69,22 @@ private struct PetAnimation: Decodable {
 
 /// Slices a hatch-pet spritesheet into `[row][col]` NSImage frames.
 ///
-/// Loads `~/.codex/pets/jarvis/spritesheet.webp` and `pet.json` if present;
-/// otherwise yields a placeholder atlas so the rest of the UI still renders.
+/// Resolution order (see `load(customSpritePath:)`):
+///   1. The user's custom sprite directory (`AgentProfile.spritePath`), if set
+///      and readable. Intended for power users running the hatch-pet skill
+///      themselves in Codex CLI and pointing here at `~/.codex/pets/<slug>/`.
+///   2. The app-bundled default at `Resources/pets/zen-robot/` (shipped with
+///      the DMG — no Codex setup needed for a working pet).
+///   3. A gradient placeholder, as a last resort when the bundle is missing
+///      its resources (unusual; mostly relevant during early dev).
 final class SpriteAtlas {
     let metadata: PetMetadata
     let frames: [[NSImage]]
     let isPlaceholder: Bool
+
+    /// Slug of the bundled atlas that ships inside the .app — the default
+    /// pet when the user hasn't pointed at a custom sprite path.
+    static let bundledDefaultSlug = "zen-robot"
 
     private init(metadata: PetMetadata, frames: [[NSImage]], placeholder: Bool) {
         self.metadata = metadata
@@ -82,14 +92,40 @@ final class SpriteAtlas {
         self.isPlaceholder = placeholder
     }
 
-    /// Loads `<spritePath>/spritesheet.webp` and `<spritePath>/pet.json`.
-    /// `~` is expanded; the placeholder atlas is returned if anything is
-    /// missing.
-    static func load(spritePath: String) -> SpriteAtlas {
-        let expanded = (spritePath as NSString).expandingTildeInPath
-        let dir = URL(fileURLWithPath: expanded, isDirectory: true)
-        let sheetURL = dir.appendingPathComponent("spritesheet.webp")
-        let jsonURL = dir.appendingPathComponent("pet.json")
+    /// URL of a bundled sprite atlas (e.g. "zen-robot") shipped inside
+    /// `Resources/pets/<slug>/`. Returns nil if the folder isn't present
+    /// in the running app bundle (only happens in non-Xcode builds).
+    static func bundledSpritePath(slug: String) -> URL? {
+        Bundle.main.url(forResource: "pets/\(slug)", withExtension: nil)
+    }
+
+    /// Walks the fallback chain documented at the top of the file. A nil or
+    /// empty `customSpritePath` means "no override — use the bundled default."
+    static func load(customSpritePath: String?) -> SpriteAtlas {
+        if let custom = customSpritePath?.trimmingCharacters(in: .whitespaces),
+           !custom.isEmpty {
+            let url = URL(
+                fileURLWithPath: (custom as NSString).expandingTildeInPath,
+                isDirectory: true
+            )
+            if let atlas = load(directory: url) {
+                return atlas
+            }
+            NSLog("[ductor] custom sprite path \(custom) missing or unreadable — using bundled default.")
+        }
+        if let bundled = bundledSpritePath(slug: bundledDefaultSlug),
+           let atlas = load(directory: bundled) {
+            return atlas
+        }
+        return placeholder(using: .fallback)
+    }
+
+    /// Attempt to slice a sprite atlas from a specific directory. Returns
+    /// nil when the spritesheet is missing/unreadable so callers can move
+    /// down the fallback chain.
+    private static func load(directory: URL) -> SpriteAtlas? {
+        let sheetURL = directory.appendingPathComponent("spritesheet.webp")
+        let jsonURL = directory.appendingPathComponent("pet.json")
 
         let metadata: PetMetadata = {
             guard let data = try? Data(contentsOf: jsonURL),
@@ -100,9 +136,7 @@ final class SpriteAtlas {
 
         guard let image = NSImage(contentsOf: sheetURL),
               let cg = image.cgImage(forProposedRect: nil, context: nil, hints: nil)
-        else {
-            return placeholder(using: metadata)
-        }
+        else { return nil }
 
         let rows = metadata.rows.count
         let cols = metadata.cols
@@ -115,28 +149,17 @@ final class SpriteAtlas {
         for r in 0..<rows {
             var rowFrames: [NSImage] = []
             for c in 0..<cols {
-                let rect = CGRect(
-                    x: c * cellW,
-                    y: r * cellH,
-                    width: cellW,
-                    height: cellH
-                )
+                let rect = CGRect(x: c * cellW, y: r * cellH, width: cellW, height: cellH)
                 if let cropped = cg.cropping(to: rect) {
-                    let frame = NSImage(
+                    rowFrames.append(NSImage(
                         cgImage: cropped,
                         size: NSSize(width: cellW, height: cellH)
-                    )
-                    rowFrames.append(frame)
+                    ))
                 }
             }
-            if !rowFrames.isEmpty {
-                grid.append(rowFrames)
-            }
+            if !rowFrames.isEmpty { grid.append(rowFrames) }
         }
-
-        guard !grid.isEmpty else {
-            return placeholder(using: metadata)
-        }
+        guard !grid.isEmpty else { return nil }
         return SpriteAtlas(metadata: metadata, frames: grid, placeholder: false)
     }
 

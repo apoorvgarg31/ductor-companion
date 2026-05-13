@@ -129,12 +129,24 @@ private struct DuctorHomeRow: View {
 private struct AgentEditor: View {
     @Binding var agent: AgentProfile
 
+    /// `agent.spritePath` is `String?` (nil → bundled default); SwiftUI's
+    /// TextField wants a non-optional binding, so collapse nil → "" both ways.
+    private var spritePathBinding: Binding<String> {
+        Binding(
+            get: { agent.spritePath ?? "" },
+            set: { newValue in
+                let trimmed = newValue.trimmingCharacters(in: .whitespaces)
+                agent.spritePath = trimmed.isEmpty ? nil : trimmed
+            }
+        )
+    }
+
     var body: some View {
         Form {
             TextField("Display name", text: $agent.displayName)
             TextField("Bot username (optional, for the tap-to-open deep link)",
                       text: $agent.botUsername)
-            TextField("Sprite path", text: $agent.spritePath)
+            BundledSpriteRow(spritePath: spritePathBinding)
             Toggle("Periodic screenshots", isOn: $agent.screenshotsEnabled)
             Stepper(value: $agent.heartbeatInterval, in: 30...3600, step: 30) {
                 Text("Heartbeat every \(Int(agent.heartbeatInterval)) sec")
@@ -151,6 +163,62 @@ private struct AgentEditor: View {
                     Text("to \(agent.quietHoursEnd):00")
                 }
             }
+        }
+    }
+}
+
+// MARK: - Sprite row (bundled default thumbnail + custom path field)
+
+/// Shows the bundled Zen Robot thumbnail next to a textfield for an optional
+/// override path. Empty path → bundled default is used.
+private struct BundledSpriteRow: View {
+    @Binding var spritePath: String
+
+    var body: some View {
+        HStack(alignment: .top, spacing: 10) {
+            thumbnail
+                .frame(width: 56, height: 56)
+                .background(Color.secondary.opacity(0.08))
+                .clipShape(RoundedRectangle(cornerRadius: 6))
+            VStack(alignment: .leading, spacing: 4) {
+                TextField(
+                    "Custom sprite path (optional, defaults to bundled Zen Robot)",
+                    text: $spritePath
+                )
+                HStack {
+                    Button("Browse…") { browse() }
+                    Button("Reset to default") { spritePath = "" }
+                        .disabled(spritePath.isEmpty)
+                    Spacer()
+                }
+                .font(.footnote)
+            }
+        }
+    }
+
+    @ViewBuilder private var thumbnail: some View {
+        if let url = Bundle.main.url(forResource: "pets/zen-robot/thumbnail",
+                                     withExtension: "png"),
+           let img = NSImage(contentsOf: url) {
+            Image(nsImage: img).resizable().scaledToFit()
+        } else {
+            Image(systemName: "circle.hexagongrid.fill")
+                .resizable()
+                .scaledToFit()
+                .foregroundStyle(.secondary)
+                .padding(8)
+        }
+    }
+
+    private func browse() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Pick a hatch-pet directory containing spritesheet.webp + pet.json"
+        panel.prompt = "Use this folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            spritePath = url.path
         }
     }
 }

@@ -25,6 +25,7 @@
 		AA0000010000000000000012 /* SetupWizardView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000012 /* SetupWizardView.swift */; };
 		AA0000010000000000000013 /* bridge_bundled in Resources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000013 /* bridge_bundled */; };
 		AA0000010000000000000014 /* TelegramLoginView.swift in Sources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000014 /* TelegramLoginView.swift */; };
+		AA0000010000000000000015 /* pets in Resources */ = {isa = PBXBuildFile; fileRef = BB0000010000000000000015 /* pets */; };
 /* End PBXBuildFile section */
 
 /* Begin PBXFileReference section */
@@ -48,6 +49,7 @@
 		BB0000010000000000000012 /* SetupWizardView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = SetupWizardView.swift; sourceTree = "<group>"; };
 		BB0000010000000000000013 /* bridge_bundled */ = {isa = PBXFileReference; lastKnownFileType = folder; path = bridge_bundled; sourceTree = "<group>"; };
 		BB0000010000000000000014 /* TelegramLoginView.swift */ = {isa = PBXFileReference; lastKnownFileType = sourcecode.swift; path = TelegramLoginView.swift; sourceTree = "<group>"; };
+		BB0000010000000000000015 /* pets */ = {isa = PBXFileReference; lastKnownFileType = folder; path = pets; sourceTree = "<group>"; };
 /* End PBXFileReference section */
 
 /* Begin PBXFrameworksBuildPhase section */
@@ -107,6 +109,7 @@
 				BB000001000000000000000C /* Assets.xcassets */,
 				BB000001000000000000000D /* bridge */,
 				BB0000010000000000000013 /* bridge_bundled */,
+				BB0000010000000000000015 /* pets */,
 			);
 			path = Resources;
 			sourceTree = "<group>";
@@ -172,6 +175,7 @@
 				AA000001000000000000000C /* Assets.xcassets in Resources */,
 				AA000001000000000000000D /* bridge in Resources */,
 				AA0000010000000000000013 /* bridge_bundled in Resources */,
+				AA0000010000000000000015 /* pets in Resources */,
 			);
 			runOnlyForDeploymentPostprocessing = 0;
 		};
@@ -277,7 +281,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.apoorvgarg.ductor-companion";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;
@@ -302,7 +306,7 @@
 					"@executable_path/../Frameworks",
 				);
 				MACOSX_DEPLOYMENT_TARGET = 13.0;
-				MARKETING_VERSION = 0.1.0;
+				MARKETING_VERSION = 0.2.0;
 				PRODUCT_BUNDLE_IDENTIFIER = "com.apoorvgarg.ductor-companion";
 				PRODUCT_NAME = "$(TARGET_NAME)";
 				SWIFT_EMIT_LOC_STRINGS = YES;

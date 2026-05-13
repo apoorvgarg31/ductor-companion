@@ -511,7 +511,19 @@ struct SetupWizardView: View {
         Form {
             TextField("Slug (used for paths)", text: $slug)
             TextField("Display name", text: $displayName)
-            TextField("Sprite path", text: $spritePath)
+            VStack(alignment: .leading, spacing: 4) {
+                TextField(
+                    "Custom sprite path (optional, defaults to bundled Zen Robot)",
+                    text: $spritePath
+                )
+                HStack {
+                    Button("Browse…") { browseForSpritePath() }
+                    Button("Reset to default") { spritePath = "" }
+                        .disabled(spritePath.isEmpty)
+                    Spacer()
+                }
+                .font(.footnote)
+            }
             Toggle("Periodic screenshots", isOn: $screenshotsEnabled)
             HStack {
                 Text("Heartbeat every")
@@ -649,14 +661,27 @@ struct SetupWizardView: View {
     private func primeDetailsFromExisting(_ name: String) {
         slug = name
         displayName = name.prefix(1).uppercased() + name.dropFirst()
-        spritePath = AgentProfile.defaultSpritePath(forName: name)
+        // Leave spritePath empty so the bundled zen-robot is used by default.
+        spritePath = ""
     }
 
     private func primeDetailsFromCreated() {
         let s = newSlug.lowercased().trimmingCharacters(in: .whitespaces)
         slug = s
         displayName = s.prefix(1).uppercased() + s.dropFirst()
-        spritePath = AgentProfile.defaultSpritePath(forName: s)
+        spritePath = ""
+    }
+
+    private func browseForSpritePath() {
+        let panel = NSOpenPanel()
+        panel.canChooseFiles = false
+        panel.canChooseDirectories = true
+        panel.allowsMultipleSelection = false
+        panel.message = "Pick a hatch-pet directory containing spritesheet.webp + pet.json"
+        panel.prompt = "Use this folder"
+        if panel.runModal() == .OK, let url = panel.url {
+            spritePath = url.path
+        }
     }
 
     private func makeProfile() -> AgentProfile {
@@ -665,11 +690,12 @@ struct SetupWizardView: View {
         // can be filled in later from Settings if the user knows the @handle;
         // the bridge itself addresses the bot via the saved token on the
         // Ductor side, not via Telethon).
-        AgentProfile(
+        let trimmedSprite = spritePath.trimmingCharacters(in: .whitespaces)
+        return AgentProfile(
             name: slug,
             displayName: displayName,
             botUsername: "",
-            spritePath: spritePath,
+            spritePath: trimmedSprite.isEmpty ? nil : trimmedSprite,
             screenshotInterval: screenshotMinutes * 60,
             heartbeatInterval: heartbeatMinutes * 60,
             screenshotsEnabled: screenshotsEnabled,

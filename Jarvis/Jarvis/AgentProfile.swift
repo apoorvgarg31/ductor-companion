@@ -11,7 +11,11 @@ struct AgentProfile: Codable, Identifiable, Equatable {
     var name: String                  // slug, e.g. "jarvis"
     var displayName: String           // human label, e.g. "Jarvis"
     var botUsername: String           // e.g. "jarvis_apoorv_bot"
-    var spritePath: String            // default ~/.codex/pets/<name>/
+    /// Optional override pointing at a hatch-pet sprite directory (typically
+    /// `~/.codex/pets/<slug>/`). When nil — the common case — the pet falls
+    /// back to the app-bundled `zen-robot` atlas. See `SpriteAtlas` for the
+    /// full resolution order.
+    var spritePath: String?
     var screenshotInterval: TimeInterval
     var heartbeatInterval: TimeInterval
     var screenshotsEnabled: Bool
@@ -23,7 +27,7 @@ struct AgentProfile: Codable, Identifiable, Equatable {
         name: String,
         displayName: String,
         botUsername: String,
-        spritePath: String,
+        spritePath: String? = nil,
         screenshotInterval: TimeInterval = 300,
         heartbeatInterval: TimeInterval = 120,
         screenshotsEnabled: Bool = false,
@@ -34,12 +38,37 @@ struct AgentProfile: Codable, Identifiable, Equatable {
         self.name = name
         self.displayName = displayName
         self.botUsername = botUsername
-        self.spritePath = spritePath
+        self.spritePath = AgentProfile.normalize(spritePath)
         self.screenshotInterval = screenshotInterval
         self.heartbeatInterval = heartbeatInterval
         self.screenshotsEnabled = screenshotsEnabled
         self.quietHoursStart = quietHoursStart
         self.quietHoursEnd = quietHoursEnd
+    }
+
+    init(from decoder: Decoder) throws {
+        let c = try decoder.container(keyedBy: CodingKeys.self)
+        self.id = try c.decode(UUID.self, forKey: .id)
+        self.name = try c.decode(String.self, forKey: .name)
+        self.displayName = try c.decode(String.self, forKey: .displayName)
+        self.botUsername = try c.decode(String.self, forKey: .botUsername)
+        // Pre-v0.2.0 stored spritePath as a non-optional empty string when
+        // unset — collapse that into nil so the bundled default kicks in.
+        self.spritePath = AgentProfile.normalize(
+            try c.decodeIfPresent(String.self, forKey: .spritePath)
+        )
+        self.screenshotInterval = try c.decode(TimeInterval.self, forKey: .screenshotInterval)
+        self.heartbeatInterval = try c.decode(TimeInterval.self, forKey: .heartbeatInterval)
+        self.screenshotsEnabled = try c.decode(Bool.self, forKey: .screenshotsEnabled)
+        self.quietHoursStart = try c.decode(Int.self, forKey: .quietHoursStart)
+        self.quietHoursEnd = try c.decode(Int.self, forKey: .quietHoursEnd)
+    }
+
+    private static func normalize(_ raw: String?) -> String? {
+        guard let raw = raw?.trimmingCharacters(in: .whitespaces), !raw.isEmpty else {
+            return nil
+        }
+        return raw
     }
 
     /// Returns true when the current local time falls inside the agent's
@@ -51,12 +80,6 @@ struct AgentProfile: Codable, Identifiable, Equatable {
             return hour >= quietHoursStart && hour < quietHoursEnd
         }
         return hour >= quietHoursStart || hour < quietHoursEnd
-    }
-
-    /// Default sprite path for an agent with the given slug.
-    static func defaultSpritePath(forName name: String) -> String {
-        let home = FileManager.default.homeDirectoryForCurrentUser.path
-        return "\(home)/.codex/pets/\(name)"
     }
 
     /// Derive a slug from a Telegram bot username:
