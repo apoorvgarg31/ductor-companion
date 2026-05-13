@@ -1,9 +1,11 @@
 import AppKit
 import SwiftUI
 
-/// Borderless, transparent, always-on-top panel that hosts the pet sprite
-/// and (optionally) the speech bubble. Lets the user drag from anywhere
-/// inside the content view to reposition the window.
+/// Borderless, transparent, always-on-top panel that hosts the pet sprite.
+/// Lets the user drag from anywhere inside the content view to reposition
+/// the window. The speech bubble lives in a sibling panel (see
+/// `BubbleWindow`) so it can be anchored to the pet's current screen
+/// position rather than baked into this window's layout.
 final class PetWindow: NSPanel {
     init(contentRect: NSRect) {
         super.init(
@@ -36,40 +38,54 @@ final class PetWindow: NSPanel {
     }
 }
 
-/// Top-level NSWindowController that wires the SwiftUI hierarchy
-/// (pet + transient speech bubble) into the floating panel.
+/// Sibling floating panel that hosts the speech bubble. Sized to fit its
+/// SwiftUI content and re-positioned every time it's shown so the bubble
+/// stays glued to the pet regardless of where the pet has been dragged.
+final class BubbleWindow: NSPanel {
+    init() {
+        super.init(
+            contentRect: NSRect(x: 0, y: 0, width: 340, height: 120),
+            styleMask: [.borderless, .nonactivatingPanel],
+            backing: .buffered,
+            defer: false
+        )
+        self.level = .floating
+        self.isOpaque = false
+        self.backgroundColor = .clear
+        self.hasShadow = false
+        self.collectionBehavior = [.canJoinAllSpaces, .fullScreenAuxiliary, .stationary]
+        self.ignoresMouseEvents = false
+        self.isReleasedWhenClosed = false
+        self.hidesOnDeactivate = false
+        self.animationBehavior = .none
+    }
+
+    override var canBecomeKey: Bool { false }
+    override var canBecomeMain: Bool { false }
+}
+
+/// Top-level NSWindowController that wires the SwiftUI pet view into the
+/// floating panel and drives the transient speech bubble panel.
 final class PetWindowController: NSWindowController, NSWindowDelegate {
     let petState = PetViewState()
     private let atlas: SpriteAtlas
     private let onPetClick: () -> Void
-    private var bubbleHostingView: NSHostingView<AnyView>?
+    private let petSize = NSSize(width: 192, height: 208)
+    private var bubblePanel: BubbleWindow?
     private var bubbleDismissWork: DispatchWorkItem?
 
     init(atlas: SpriteAtlas, onPetClick: @escaping () -> Void) {
         self.atlas = atlas
         self.onPetClick = onPetClick
 
-        let petSize = NSSize(width: 192, height: 208)
-        // Reserve extra height above the pet for the bubble.
-        let totalSize = NSSize(width: 360, height: petSize.height + 220)
-        let origin = Config.shared.petPosition ?? PetWindowController.defaultOrigin(size: totalSize)
-        let frame = NSRect(origin: origin, size: totalSize)
-
+        let origin = Config.shared.petPosition ?? PetWindowController.defaultOrigin(size: petSize)
+        let frame = NSRect(origin: origin, size: petSize)
         let panel = PetWindow(contentRect: frame)
 
         let petView = PetView(state: petState, atlas: atlas, onClick: onPetClick)
+        panel.contentView = NSHostingView(rootView: petView
+            .frame(width: petSize.width, height: petSize.height))
 
-        // The container places the pet at the bottom and reserves space above
-        // for the bubble (added later via a separate hosting view).
-        let container = ZStack(alignment: .bottomLeading) {
-            Color.clear
-            petView
-                .frame(width: petSize.width, height: petSize.height)
-                .padding(.leading, 0)
-        }
-        .frame(width: totalSize.width, height: totalSize.height, alignment: .bottomLeading)
-
-        panel.contentView = NSHostingView(rootView: container)
         super.init(window: panel)
         panel.delegate = self
     }
@@ -87,7 +103,7 @@ final class PetWindowController: NSWindowController, NSWindowDelegate {
     // MARK: - Bubble
 
     func showBubble(text: String, hasMedia: Bool, mediaCaption: String?) {
-        guard let window = window, let contentView = window.contentView else { return }
+        guard let petWindow = window else { return }
         clearBubble()
 
         let openTelegram = self.onPetClick
@@ -104,16 +120,20 @@ final class PetWindowController: NSWindowController, NSWindowDelegate {
             }
         )
 
-        let host = NSHostingView(rootView: AnyView(bubble))
-        host.translatesAutoresizingMaskIntoConstraints = false
-        contentView.addSubview(host)
-        NSLayoutConstraint.activate([
-            host.leadingAnchor.constraint(equalTo: contentView.leadingAnchor, constant: 8),
-            host.trailingAnchor.constraint(lessThanOrEqualTo: contentView.trailingAnchor,
-                                           constant: -8),
-            host.topAnchor.constraint(equalTo: contentView.topAnchor, constant: 8),
-        ])
-        bubbleHostingView = host
+        let host = NSHostingView(rootView: bubble)
+        // Ask the SwiftUI hierarchy for its preferred size at a fixed width.
+        let fittingSize = host.fittingSize
+        let width: CGFloat = max(220, min(fittingSize.width, 340))
+        let height: CGFloat = max(60, fittingSize.height)
+        host.frame = NSRect(x: 0, y: 0, width: width, height: height)
+
+        let panel = BubbleWindow()
+        panel.setContentSize(NSSize(width: width, height: height))
+        panel.contentView = host
+
+        positionBubble(panel: panel, near: petWindow.frame)
+        panel.orderFront(nil)
+        bubblePanel = panel
 
         // Wave (or its closest mood) while talking.
         petState.setMood(.waving,
@@ -129,8 +149,31 @@ final class PetWindowController: NSWindowController, NSWindowDelegate {
     func clearBubble() {
         bubbleDismissWork?.cancel()
         bubbleDismissWork = nil
-        bubbleHostingView?.removeFromSuperview()
-        bubbleHostingView = nil
+        bubblePanel?.orderOut(nil)
+        bubblePanel = nil
+    }
+
+    /// Place the bubble panel above the pet by default, falling back to
+    /// below when there's no room above. Always clamp to the active
+    /// screen's visible frame so it doesn't get clipped by the menu bar
+    /// or dock.
+    private func positionBubble(panel: BubbleWindow, near petFrame: NSRect) {
+        let size = panel.frame.size
+        let gap: CGFloat = 8
+        let screen = window?.screen ?? NSScreen.main
+        let visible = screen?.visibleFrame ?? petFrame
+
+        let preferredY = petFrame.maxY + gap
+        let aboveFits = preferredY + size.height <= visible.maxY
+        let y: CGFloat = aboveFits
+            ? preferredY
+            : max(visible.minY, petFrame.minY - gap - size.height)
+
+        // Center the bubble horizontally over the pet, then clamp into screen.
+        let centeredX = petFrame.midX - size.width / 2
+        let clampedX = min(max(centeredX, visible.minX + 4),
+                           visible.maxX - size.width - 4)
+        panel.setFrameOrigin(NSPoint(x: clampedX, y: y))
     }
 
     // MARK: - NSWindowDelegate
