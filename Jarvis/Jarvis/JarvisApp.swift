@@ -1,5 +1,6 @@
 import SwiftUI
 import AppKit
+import UserNotifications
 
 /// Resolves the bridge entry point (bundled Mach-O > dev venv > system
 /// python3) and builds a Process ready to launch.
@@ -98,6 +99,7 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
                 self?.dismissWizard()
                 self?.controller?.refreshForActiveAgent()
                 self?.controller?.start()
+                if firstRun { AppDelegate.notifyFirstLaunch() }
             }
         )
         let host = NSHostingController(rootView: wizard)
@@ -115,6 +117,23 @@ final class AppDelegate: NSObject, NSApplicationDelegate {
     private func dismissWizard() {
         wizardWindow?.orderOut(nil)
         wizardWindow = nil
+    }
+
+    /// One-shot user notification pointing the user at the menu bar icon
+    /// after they finish the setup wizard for the first time. The app is
+    /// LSUIElement so there's otherwise no visible "we're running" cue.
+    static func notifyFirstLaunch() {
+        let center = UNUserNotificationCenter.current()
+        center.requestAuthorization(options: [.alert, .sound]) { granted, _ in
+            guard granted else { return }
+            let content = UNMutableNotificationContent()
+            content.title = "Ductor Companion is running"
+            content.body = "Your pet sits at the bottom-right of the screen. "
+                + "Click the menu bar icon for settings."
+            let req = UNNotificationRequest(identifier: "ductor.firstLaunch",
+                                            content: content, trigger: nil)
+            center.add(req)
+        }
     }
 }
 
